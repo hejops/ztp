@@ -1,6 +1,6 @@
 use std::net::TcpListener;
 
-use zero_to_prod::ch2_3;
+use zero_to_prod::startup::run;
 
 // note how async must be propagated everywhere
 // "unless polled, there is no guarantee that [futures] will execute to
@@ -9,7 +9,7 @@ use zero_to_prod::ch2_3;
 #[tokio::main] // requires features macros, rt-multi-thread
 async fn main() -> Result<(), std::io::Error> {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    ch2_3(listener)?.await
+    run(listener)?.await
 }
 
 // /// when expanded with `cargo expand`

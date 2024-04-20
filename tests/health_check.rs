@@ -1,5 +1,7 @@
 use std::net::TcpListener;
 
+use zero_to_prod::startup;
+
 // 'no external crate' -- add to Cargo.toml:
 // [lib]
 // path = "src/lib.rs"
@@ -23,7 +25,7 @@ fn spawn_app() -> String {
     // available port. this port must then be made known to clients
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
-    let server = zero_to_prod::ch2_3(listener).expect("bind address");
+    let server = startup::run(listener).expect("bind address");
     tokio::spawn(server);
     format!("http://127.0.0.1:{port}")
 }
