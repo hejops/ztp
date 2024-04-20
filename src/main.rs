@@ -1,5 +1,6 @@
 use std::net::TcpListener;
 
+use zero_to_prod::configuration::get_configuration;
 use zero_to_prod::startup::run;
 
 // note how async must be propagated everywhere
@@ -8,7 +9,11 @@ use zero_to_prod::startup::run;
 
 #[tokio::main] // requires features macros, rt-multi-thread
 async fn main() -> Result<(), std::io::Error> {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    // let addr = "127.0.0.1:0"; // hardcoded port
+    let cfg = get_configuration().unwrap();
+    let addr = format!("127.0.0.1:{}", cfg.application_port);
+    let listener = TcpListener::bind(addr)?;
+
     run(listener)?.await
 }
 

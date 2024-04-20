@@ -1,5 +1,8 @@
 use std::net::TcpListener;
 
+use sqlx::Connection;
+use sqlx::PgConnection;
+use zero_to_prod::configuration::get_configuration;
 use zero_to_prod::startup;
 
 // 'no external crate' -- add to Cargo.toml:
@@ -53,6 +56,11 @@ async fn health_check() {
 async fn subscribe_ok() {
     let addr = spawn_app();
     let client = reqwest::Client::new();
+
+    let cfg = get_configuration().unwrap();
+    PgConnection::connect(&cfg.database.connection_string())
+        .await
+        .expect("Is postgres running? Run scripts/init_db.sh");
 
     let body = "name=john&email=foo%40bar.com";
     let resp = client
