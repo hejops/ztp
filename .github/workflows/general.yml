@@ -75,6 +75,7 @@ jobs:
           # jobs. default: empty
           key: sqlx-${{ env.SQLX_VERSION }}
 
+      # very slow (on first run)
       - name: Install sqlx-cli
         run:
           cargo install sqlx-cli

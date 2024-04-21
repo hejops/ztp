@@ -4,6 +4,7 @@ use actix_web::dev::Server;
 use actix_web::web;
 use actix_web::App;
 use actix_web::HttpServer;
+use sqlx::PgPool;
 
 use crate::routes::health_check;
 use crate::routes::subscribe;
@@ -16,6 +17,7 @@ use crate::routes::subscribe;
 pub fn run(
     // address: &str, // fixed port
     listener: TcpListener,
+    pool: PgPool,
 ) -> Result<Server, std::io::Error> {
     // email newsletter (e.g. MailChimp)
 
@@ -41,7 +43,16 @@ pub fn run(
     // an `App` 'lives' in a `HttpServer`, and handles all request/response logic
     // via `route` endpoints
 
-    let server = HttpServer::new(|| {
+    // `Data` is externally an `Arc` (for sharing/cloning), internally a `HashMap`
+    // (for wrapping arbitrary types)
+    let pool = web::Data::new(pool);
+
+    // note the closure; "`actix-web` will spin up a worker process for each
+    // available core on your machine. Each worker runs its own copy of the
+    // application built by `HttpServer` calling the very same closure that
+    // `HttpServer::new` takes as argument. That is why `connection` has to be
+    // cloneable - we need to have one for every copy of `App`."
+    let server = HttpServer::new(move || {
         // essentially equivalent to a `match` block, where we try to exhaust a series
         // of routes (match arms)
 
@@ -57,13 +68,15 @@ pub fn run(
             .route("/health_check", web::get().to(health_check))
             // remember, the guard must match the client's request type
             .route("/subscriptions", web::post().to(subscribe))
+            // global state
+            .app_data(pool.clone())
 
         // .route("/", web::get().to(greet))
         // web::get() is syntactic sugar for:
         // .route("/", actix_web::Route::new().guard(actix_web::guard::Get()))
         // .route("/{name}", web::get().to(greet))
         // `name` is just an arg; the captured value is passed to the handler
-        // function, where it should be extracted
+        // function at runtime, where it should be extracted
         // (try changing `name` to `foo` both here and in `greet`)
         //
         // https://actix.rs/docs/url-dispatch/#resource-pattern-syntax

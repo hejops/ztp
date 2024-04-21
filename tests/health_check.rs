@@ -58,9 +58,9 @@ async fn subscribe_ok() {
     let client = reqwest::Client::new();
 
     let cfg = get_configuration().unwrap();
-    PgConnection::connect(&cfg.database.connection_string())
+    let mut conn = PgConnection::connect(&cfg.database.connection_string())
         .await
-        .expect("Is postgres running? Run scripts/init_db.sh");
+        .expect("postgres must be running; run scripts/init_db.sh");
 
     let body = "name=john&email=foo%40bar.com";
     let resp = client
@@ -74,10 +74,23 @@ async fn subscribe_ok() {
     assert!(resp.status().is_success());
     // assert_eq!(resp.content_length().unwrap(), 0); // empty body
 
-    // now we also need to check that the side-effect occurred (subscription
-    // added to db). ideally, this should be done with another separate (GET)
-    // endpoint, but if this endpoint is non-trivial to implement, the check can
-    // be done inside the test ('server-side')
+    // now we check that the side-effect occurred (subscription added to db).
+    // ideally, this should be done with another separate (GET) endpoint, but if
+    // this endpoint is non-trivial to implement, the check can be done inside
+    // the test ('server-side')
+
+    // sqlx::query! can validate fields at compile time, but this requires the
+    // DATABASE_URL env var to be declared. note that env vars are loaded when the
+    // LSP is, so modifying one requires an LSP restart
+    let added = sqlx::query!("SELECT email, name FROM subscriptions")
+        .fetch_one(&mut conn)
+        .await
+        .unwrap(); // this fails because we didn't actually do anything (i.e. INSERT) with the
+                   // subscribe request
+    assert_eq!(added.name, "john");
+    assert_eq!(added.email, "foo@bar.com");
+
+    //
 }
 
 #[tokio::test]

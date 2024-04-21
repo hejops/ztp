@@ -1,6 +1,9 @@
-use actix_web::web::Form;
+use actix_web::web;
 use actix_web::HttpResponse;
+use chrono::Utc;
 use serde::Deserialize;
+use sqlx::PgPool;
+use uuid::Uuid;
 
 #[derive(Deserialize)]
 pub struct FormData {
@@ -8,12 +11,21 @@ pub struct FormData {
     email: String,
 }
 
-/// If invalid data is encountered, the function returns early, and is
-/// transformed into an `Error` (400) automatically, even if `form` is not
-/// used.
+/// # Arguments
 ///
-/// Note: if the function takes no arguments, it will always return 200,
-/// even on invalid data.
+/// `form` is passed as a raw HTTP request. Upon deserialization into our
+/// `FormData` struct (via `Form` and `serde`), invalid data causes the function
+/// to return early, returning an `Error` (400) automatically. Otherwise, the
+/// successfully parsed request is added to the db.
+///
+/// (Note: if the function takes no arguments, it will always return 200,
+/// even on invalid data.)
+///
+/// `PgPool` is used over `PgConnection` as the former has has `Mutex`
+/// 'built-in'.
+// "when you run a query against a `&PgPool`, `sqlx` will borrow a `PgConnection` from the pool and
+// use it to execute the query; if no connection is available, it will create a new one or wait
+// until one frees up."
 ///
 /// # Request parsing
 ///
@@ -42,4 +54,33 @@ pub struct FormData {
 ///
 /// Monomorphisation is a zero-cost abstraction (no runtime cost). Proc
 /// macros (`#[derive(Deserialize)]`) make parsing convenient.
-pub async fn subscribe(form: Form<FormData>) -> HttpResponse { HttpResponse::Ok().finish() }
+pub async fn subscribe(
+    form: web::Form<FormData>,
+    pool: web::Data<PgPool>,
+) -> HttpResponse {
+    // query is statically checked against db schema (migrations/xxx.sql or
+    // postgres?) at compile time
+    // (if 'relation does not exist', restart LSP)
+
+    match sqlx::query!(
+        "
+    INSERT INTO subscriptions (id, email, name, subscribed_at)
+    VALUES ($1, $2, $3, $4)
+",
+        Uuid::new_v4(),
+        form.email,
+        form.name,
+        Utc::now(),
+    )
+    // `Executor` requires mut ref (sqlx's async does not imply mutex). PgPool handles this, but
+    // PgConnection doesn't
+    .execute(pool.get_ref())
+    .await
+    {
+        Ok(_) => HttpResponse::Ok().finish(),
+        Err(e) => {
+            println!("bad query: {}", e);
+            HttpResponse::InternalServerError().finish()
+        }
+    }
+}

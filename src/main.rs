@@ -1,5 +1,6 @@
 use std::net::TcpListener;
 
+use sqlx::PgPool;
 use zero_to_prod::configuration::get_configuration;
 use zero_to_prod::startup::run;
 
@@ -14,7 +15,13 @@ async fn main() -> Result<(), std::io::Error> {
     let addr = format!("127.0.0.1:{}", cfg.application_port);
     let listener = TcpListener::bind(addr)?;
 
-    run(listener)?.await
+    // taken from subscribe_ok
+    let cfg = get_configuration().unwrap();
+    let conn = PgPool::connect(&cfg.database.connection_string())
+        .await
+        .expect("postgres must be running; run scripts/init_db.sh");
+
+    run(listener, conn)?.await
 }
 
 // /// when expanded with `cargo expand`
