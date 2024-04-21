@@ -3,7 +3,8 @@ use config::ConfigError;
 use config::FileFormat;
 use serde::Deserialize;
 
-/// Server configuration
+/// Server configuration, loaded from configuration.yaml. See
+/// `get_configuration`.
 #[derive(Deserialize)]
 pub struct Settings {
     pub database: DatabaseSettings,
@@ -11,7 +12,7 @@ pub struct Settings {
     pub application_port: u16,
 }
 
-/// Database configuration
+/// Database configuration, nested within `Settings`
 #[derive(Deserialize)]
 pub struct DatabaseSettings {
     pub username: String,
@@ -29,6 +30,15 @@ impl DatabaseSettings {
         format!(
             "postgres://{}:{}@{}:{}/{}",
             self.username, self.password, self.host, self.port, self.database_name,
+        )
+    }
+
+    /// Return string representation of the Postgres instance (instead of a
+    /// specific db)
+    pub fn connection_string_without_db(&self) -> String {
+        format!(
+            "postgres://{}:{}@{}:{}",
+            self.username, self.password, self.host, self.port,
         )
     }
 }

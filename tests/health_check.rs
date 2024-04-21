@@ -1,8 +1,12 @@
 use std::net::TcpListener;
 
 use sqlx::Connection;
+use sqlx::Executor;
 use sqlx::PgConnection;
+use sqlx::PgPool;
+use uuid::Uuid;
 use zero_to_prod::configuration::get_configuration;
+use zero_to_prod::configuration::DatabaseSettings;
 use zero_to_prod::startup;
 
 // 'no external crate' -- add to Cargo.toml:
@@ -17,20 +21,66 @@ use zero_to_prod::startup;
 // testing should be framework-agnostic, and common between testing and
 // production
 
+pub struct TestApp {
+    pub addr: String,
+    pub pool: PgPool,
+}
+
+/// Reads `DatabaseSettings` and creates a db with a randomised name (but with
+/// the same migrations/tables). The connection to this db can then be used to
+/// run a single test.
+pub async fn configure_database(cfg: &DatabaseSettings) -> PgPool {
+    // connect to the top-level db
+    let mut conn = PgConnection::connect(&cfg.connection_string_without_db())
+        .await
+        .expect("postgres must be running; run scripts/init_db.sh");
+
+    // create randomised db (randomisation is done by caller, not here).
+    // unlike `query!`, `Executor` trait must be imported, and query validity is not
+    // checked at compile time
+    conn.execute(format!(r#"CREATE DATABASE "{}";"#, cfg.database_name).as_str())
+        .await
+        .unwrap();
+
+    // perform the migration(s) and create the table(s). `migrate!` path defaults to
+    // "./migrations", where . is project root
+    let pool = PgPool::connect(&cfg.connection_string()).await.unwrap();
+    sqlx::migrate!().run(&pool).await.unwrap();
+    pool
+}
+
 // must not be async! https://github.com/LukeMathWalker/zero-to-production/issues/242#issuecomment-1915933810
-/// Generally, `Server`s should be `spawn`ed. Requests from a `Client` should be
-/// made `async`.
+/// Wrapper over `startup::run`. Spawns a `TestApp` containing default config,
+/// which can be used for testing.
+//
+// Generally, `Server`s should be `spawn`ed. Requests from a `Client` should be
+// made `async`.
 ///
-/// Returns the address to which the server was bound, in the form `http://127.0.0.1:{port}`.
-/// The `http://` prefix is important, as clients will send requests to the address.
-fn spawn_app() -> String {
-    // port 0 is reserved by the OS; the server will be spawned on a random
-    // available port. this port must then be made known to clients
+/// Returns the address to which the server was bound, in the form `http://127.0.0.1:{port}`, as
+/// well as the address to the (randomised) postgres connection.
+/// The `http://` prefix is important, as this is the address that clients will send requests to.
+async fn spawn_app() -> TestApp {
+    // port 0 is reserved by the OS; the server will be spawned on an address with a
+    // random available port. this address/port must then be made known to clients
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
-    let server = startup::run(listener).expect("bind address");
+    let addr = format!("http://127.0.0.1:{port}");
+
+    // in addition to the address, the db connection must also be made known. db
+    // name is randomised to allow a new db to be spawned per test
+    let mut cfg = get_configuration().unwrap();
+    // static db name
+    // let pool = PgPool::connect(&cfg.database.connection_string())
+    //     .await
+    //     .expect("postgres must be running; run scripts/init_db.sh");
+    // random db name
+    cfg.database.database_name = Uuid::new_v4().to_string();
+    let pool = configure_database(&cfg.database).await;
+
+    let server = startup::run(listener, pool.clone()).expect("bind address");
     tokio::spawn(server);
-    format!("http://127.0.0.1:{port}")
+
+    TestApp { addr, pool }
 }
 
 // "when a tokio runtime is shut down all tasks spawned on it are dropped.
@@ -39,11 +89,11 @@ fn spawn_app() -> String {
 
 #[tokio::test]
 async fn health_check() {
-    let addr = spawn_app(); // spawn the server in background (not async)
+    let app = spawn_app().await; // spawn the server in background (not async)
     let client = reqwest::Client::new();
 
     let resp = client
-        .get(format!("{addr}/health_check"))
+        .get(format!("{}/health_check", app.addr))
         // send, await, handle error
         .send()
         .await
@@ -54,17 +104,12 @@ async fn health_check() {
 
 #[tokio::test]
 async fn subscribe_ok() {
-    let addr = spawn_app();
+    let app = spawn_app().await;
     let client = reqwest::Client::new();
-
-    let cfg = get_configuration().unwrap();
-    let mut conn = PgConnection::connect(&cfg.database.connection_string())
-        .await
-        .expect("postgres must be running; run scripts/init_db.sh");
 
     let body = "name=john&email=foo%40bar.com";
     let resp = client
-        .post(format!("{addr}/subscriptions"))
+        .post(format!("{}/subscriptions", app.addr))
         .header("Content-Type", "application/x-www-form-urlencoded")
         .body(body)
         .send()
@@ -80,22 +125,38 @@ async fn subscribe_ok() {
     // the test ('server-side')
 
     // sqlx::query! can validate fields at compile time, but this requires the
-    // DATABASE_URL env var to be declared. note that env vars are loaded when the
-    // LSP is, so modifying one requires an LSP restart
+    // DATABASE_URL env var to be declared (in ./.env). note that env vars are
+    // loaded when the LSP is, so modifying one requires an LSP restart
     let added = sqlx::query!("SELECT email, name FROM subscriptions")
-        .fetch_one(&mut conn)
+        .fetch_one(&app.pool)
         .await
-        .unwrap(); // this fails because we didn't actually do anything (i.e. INSERT) with the
-                   // subscribe request
+        .unwrap();
+    // initially, this failed because we didn't actually do anything (i.e. INSERT)
+    // with the subscribe request, so we couldn't fetch anything
     assert_eq!(added.name, "john");
     assert_eq!(added.email, "foo@bar.com");
 
-    //
+    // since email is a UNIQUE field, this test can only pass once! to avoid
+    // this, either implement rollbacks (faster), or create a new db with every
+    // test (easier)
+
+    // PGPASSWORD=password psql --host=localhost --username=postgres
+    // --command='SELECT datname FROM pg_catalog.pg_database;'
+    // datname --------------------------------------
+    //  postgres
+    //  newsletter
+    //  template1
+    //  template0
+    //  9ebef8e3-598f-4467-93ff-9e687625d063
+    //  f4671add-aec8-4c67-8953-a79d979f4274
+    //  4da2016f-1b27-4256-bdd6-d2f77ddadafa
+    //  ...
+    // (13 rows)
 }
 
 #[tokio::test]
 async fn subscribe_invalid() {
-    let addr = spawn_app();
+    let app = spawn_app().await;
     let client = reqwest::Client::new();
 
     // for parametrised testing, use rstest
@@ -105,7 +166,7 @@ async fn subscribe_invalid() {
         ("", "empty"),
     ] {
         let resp = client
-            .post(format!("{addr}/subscriptions"))
+            .post(format!("{}/subscriptions", app.addr))
             .header("Content-Type", "application/x-www-form-urlencoded")
             .body(body)
             .send()
