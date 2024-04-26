@@ -16,13 +16,33 @@ name = "zero-to-prod"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+# to remove unused dependencies, use cargo-udeps (requires nightly)
+#   cargo +nightly udeps
+#
+# udeps only picks up crates that are not `use`d at all; reporting top-level
+# `use` statements in the code that are actually unused is left to the
+# compiler. udeps also may have false negatives
+#
+# in case of:
+#   error: the 'cargo' binary, normally provided by the 'cargo' component, is not
+#   applicable to the 'nightly-x86_64-unknown-linux-gnu' toolchain
+# run:
+#   rustup update
+# https://github.com/LukeMathWalker/zero-to-production/issues/217#issuecomment-1677049181
+
 [dependencies]
 actix-web = "4.5.1"
 chrono = { version = "0.4.38", features = ["clock"] }
 config = "0.14.0"
+# env_logger = "0.11.3"
+# log = "0.4.21"
 reqwest = "0.12.3"
 serde = { version = "1.0.198", features = ["derive"] }
 tokio = { version = "1.37.0", features = ["macros", "rt-multi-thread"] }
+tracing = { version = "0.1.40", features = ["log"] }
+tracing-bunyan-formatter = "0.3.9"
+tracing-log = "0.2.0"
+tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 uuid = { version = "1.8.0", features = ["v4"] }
 
 [dependencies.sqlx]
@@ -34,5 +54,5 @@ features = [
   "migrate",              # test migrations
   "postgres",             # non-standard SQL types
   "runtime-tokio-rustls",
-  "uuid",
+  "uuid",                 # unique ids for entries
 ]

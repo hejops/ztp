@@ -3,6 +3,7 @@ use actix_web::HttpResponse;
 use chrono::Utc;
 use serde::Deserialize;
 use sqlx::PgPool;
+use tracing::Instrument;
 use uuid::Uuid;
 
 #[derive(Deserialize)]
@@ -11,6 +12,12 @@ pub struct FormData {
     email: String,
 }
 
+/// # Request example
+///
+/// ```sh
+///     curl -i -X POST -d 'email=john@foo.com&name=John' http://127.0.0.1:8000/subscriptions
+/// ```
+///
 /// # Arguments
 ///
 /// `form` is passed as a raw HTTP request. Upon deserialization into our
@@ -58,10 +65,40 @@ pub async fn subscribe(
     form: web::Form<FormData>,
     pool: web::Data<PgPool>,
 ) -> HttpResponse {
-    // query is statically checked against db schema (migrations/xxx.sql or
-    // postgres?) at compile time
-    // (if 'relation does not exist', restart LSP)
+    let id = Uuid::new_v4();
 
+    let req_span = tracing::info_span!(
+        // with `log` feature, tracing events are redirected to `log` automatically
+        // note: formatting is disabled in this macro!
+        "Adding new subscriber",
+        %id, // equivalent to `id = %id`
+        subscriber_email = %form.email, // named key
+        subscriber_name = %form.name,
+    );
+    let _enter = req_span.enter(); // this span is sync
+
+    // the span persists until the end of the function, where it is dropped
+    //
+    // -> entered span
+    // <- exited span
+    // -- closed span (drop)
+
+    // .enter should not be used in an async fn; from method docs:
+    //
+    // "...[an] `await` keyword may yield, causing the runtime to switch to
+    // another task, while remaining in this span!"
+    //
+    // when a future (task) is idle, the executor may switch to a different task.
+    // however, the span would be unaware of this switch, and would (sort of) lead
+    // to the interleaving we wanted to avoid in the first place. to correctly
+    // switch spans, use `tracing::Instrument` and attach the span to the async fn
+    let query_span = tracing::info_span!("INSERTing new subscriber into db");
+
+    // query is statically checked against db schema at compile time, but postgres
+    // must be running
+    //
+    // (if 'relation does not exist', start postgres and restart LSP)
+    // TODO: error if postgres not started, should be caught
     match sqlx::query!(
         "
     INSERT INTO subscriptions (id, email, name, subscribed_at)
@@ -75,11 +112,16 @@ pub async fn subscribe(
     // `Executor` requires mut ref (sqlx's async does not imply mutex). PgPool handles this, but
     // PgConnection doesn't
     .execute(pool.get_ref())
+    .instrument(query_span)
     .await
     {
-        Ok(_) => HttpResponse::Ok().finish(),
+        Ok(_) => {
+            tracing::info!("Added new subscriber to db");
+            HttpResponse::Ok().finish()
+        }
         Err(e) => {
-            println!("bad query: {}", e);
+            // note: this is -not- covered by the span!
+            tracing::error!("bad query: {e:?}");
             HttpResponse::InternalServerError().finish()
         }
     }

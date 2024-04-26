@@ -1,6 +1,7 @@
 use std::net::TcpListener;
 
 use actix_web::dev::Server;
+use actix_web::middleware::Logger;
 use actix_web::web;
 use actix_web::App;
 use actix_web::HttpServer;
@@ -65,6 +66,7 @@ pub fn run(
         // e.g. /name=john&email=foo%40bar.com (application/x-www-form-urlencoded)
 
         App::new()
+            .wrap(Logger::default())
             .route("/health_check", web::get().to(health_check))
             // remember, the guard must match the client's request type
             .route("/subscriptions", web::post().to(subscribe))

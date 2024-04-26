@@ -13,22 +13,58 @@ use zero_to_prod::startup;
 // [lib]
 // path = "src/lib.rs"
 
+// On testing, logging and tracing
+//
 // integration tests remove the need for manual curl invocation
 //
-// black-box tests are most robust, as they reflect exactly how clients
-// interact with API (e.g. request type, path)
+// black-box tests are most robust, as they reflect exactly how clients interact
+// with API (e.g. request type, path)
 //
 // testing should be framework-agnostic, and common between testing and
 // production
+//
+// however, tests are not proofs of correctness, and there will be known
+// unknowns (e.g. dropped connection, malicious inputs), and unknown unknowns
+// (e.g. heavy load, multiple failures, memory leaks). crucially, the latter
+// cannot be reproduced; to react to such issues, we need to generate
+// high-quality logs, and be able to interpret them.
+//
+// the standard crate for logging is `log` (which provides -only- macros);
+// `actix_web::middleware` also provides `Logger`. a separate crate is required
+// for the `Log` trait, which makes the global decision of what to do with all
+// the logs (e.g. print? write to file? send to remote?); we use `env_logger`
+//
+// good logs must be verbose and reproducible; the goal is to be able to find
+// the cause of a bug with logs alone, and as little user clarification as
+// possible. where possible, all user inputs and timestamps must be recorded.
+//
+// logging is done at the level of individual instructions; only a flat series
+// of logs can ever be produced, and trying to stitch them together into a
+// tree-like structure quickly leads to scaling issues
+//
+// tracing is done at the higher level of tasks, and allows the granular
+// division of tasks (into subtasks, etc) to be represented with ease. for this,
+// `Subscriber` is analogous to `Log`, provided by the `tracing-subscriber`
+// crate.
+
+// note: `tracing` events can be picked up `Log`, with the `log` feature.
+// however, logging is still useful at the top level, to capture
+// framework-related logs that don't need spans. since `log` events cannot be
+// picked up by `Subscriber`, we use `tracing-log` to do this. tl;dr:
+//
+// `log` -> `Log`
+// `tracing` -> `Subscriber`
+// `tracing` -[tracing-log]> `Log`
+// `log` -[-F log]> `Subscriber`
 
 pub struct TestApp {
     pub addr: String,
     pub pool: PgPool,
 }
 
-/// Reads `DatabaseSettings` and creates a db with a randomised name (but with
-/// the same migrations/tables). The connection to this db can then be used to
-/// run a single test.
+/// Read `DatabaseSettings` and create a db with a randomised name (but with the
+/// same migrations/tables, specified in the migrations directory). The
+/// connection to this db can then be used to run a single test.
 pub async fn configure_database(cfg: &DatabaseSettings) -> PgPool {
     // connect to the top-level db
     let mut conn = PgConnection::connect(&cfg.connection_string_without_db())
@@ -50,8 +86,8 @@ pub async fn configure_database(cfg: &DatabaseSettings) -> PgPool {
 }
 
 // must not be async! https://github.com/LukeMathWalker/zero-to-production/issues/242#issuecomment-1915933810
-/// Wrapper over `startup::run`. Spawns a `TestApp` containing default config,
-/// which can be used for testing.
+/// Spawn a `TestApp` containing default config, which can be used for testing;
+/// a wrapper over `startup::run`.
 //
 // Generally, `Server`s should be `spawn`ed. Requests from a `Client` should be
 // made `async`.
@@ -136,9 +172,9 @@ async fn subscribe_ok() {
     assert_eq!(added.name, "john");
     assert_eq!(added.email, "foo@bar.com");
 
-    // since email is a UNIQUE field, this test can only pass once! to avoid
-    // this, either implement rollbacks (faster), or create a new db with every
-    // test (easier)
+    // since email is a UNIQUE field, this test can only pass once (per db
+    // instantation)! to avoid this, either restart db (not good), implement
+    // rollbacks (faster), or create a new db with every test (easier)
 
     // PGPASSWORD=password psql --host=localhost --username=postgres
     // --command='SELECT datname FROM pg_catalog.pg_database;'
