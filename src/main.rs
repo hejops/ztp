@@ -53,7 +53,10 @@ async fn main() -> Result<(), std::io::Error> {
     let cfg = get_configuration().unwrap();
     let pool = PgPool::
         // connect(cfg.database.connection_string().expose_secret()).await
-        // only connect when the pool is used for the first time (this is not async)
+        // only connect when the pool is used for the first time (this is not async). this allows
+        // db-free requests (e.g. health_check) to avoid init'ing the db. however, attempting to
+        // init the db when it is not yet configured (e.g. in docker) will cause HTTP
+        // 500 to be returned
         connect_lazy(cfg.database.connection_string().expose_secret())
     .expect("postgres must be running; run scripts/init_db.sh");
 

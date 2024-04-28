@@ -17,7 +17,8 @@ pub struct FormData {
 /// # Request example
 ///
 /// ```sh
-///     curl -i -X POST -d 'email=john@foo.com&name=John' http://127.0.0.1:8000/subscriptions
+///     curl -v --include --data 'email=john@foo.com&name=John' http://127.0.0.1:8000/subscriptions
+///     curl --data 'email=john@foo.com&name=John' http://127.0.0.1:8000/subscriptions
 /// ```
 ///
 /// # Arguments
