@@ -3,7 +3,6 @@ use actix_web::HttpResponse;
 use chrono::Utc;
 use serde::Deserialize;
 use sqlx::PgPool;
-use tracing::Instrument;
 use uuid::Uuid;
 
 #[derive(Deserialize)]
@@ -12,6 +11,9 @@ pub struct FormData {
     email: String,
 }
 
+/// `POST`. `form` is raw HTML, which is ultimately deserialized into a SQL
+/// `INSERT` query.
+///
 /// # Request example
 ///
 /// ```sh
@@ -34,48 +36,63 @@ pub struct FormData {
 // use it to execute the query; if no connection is available, it will create a new one or wait
 // until one frees up."
 ///
-/// # Request parsing
-///
-/// How `Form` -> `Result` extraction works: `FromRequest` trait provides
-/// the `from_request` method, which takes `HttpRequest` + `Payload`,
-/// and implicitly 'wraps' the return value as `Result<Self, Self::Error>`
-/// (in practice, this usually means (200, 400)).
-///
-/// Under the hood, `from_request` uses `UrlEncoded::new`, and
-/// `serde_urlencoded::from_bytes`.
-///
-/// # Deserialization, serde
-///
-/// `serde` defines a set of data models, agnostic to specific data formats
-/// like JSON.
-///
-/// The `Serialize` trait (`serialize` method) converts a single type `T`
-/// (e.g. `Vec`) into `Result`:
-///
-/// ```rust,ignore
-///     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-/// ```
-///
-/// The `Serializer` trait (`serialize_X` methods) converts any and all
-/// arbitrary Rust types `T` into `Result`.
-///
-/// Monomorphisation is a zero-cost abstraction (no runtime cost). Proc
-/// macros (`#[derive(Deserialize)]`) make parsing convenient.
+// # Request parsing
+//
+// How `Form` -> `Result` extraction works: `FromRequest` trait provides
+// the `from_request` method, which takes `HttpRequest` + `Payload`,
+// and implicitly 'wraps' the return value as `Result<Self, Self::Error>`
+// (in practice, this usually means (200, 400)).
+//
+// Under the hood, `from_request` uses `UrlEncoded::new`, and
+// `serde_urlencoded::from_bytes`.
+//
+// # Deserialization, serde
+//
+// `serde` defines a set of data models, agnostic to specific data formats
+// like JSON.
+//
+// The `Serialize` trait (`serialize` method) converts a single type `T`
+// (e.g. `Vec`) into `Result`:
+//
+// ```rust,ignore
+//     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+// ```
+//
+// The `Serializer` trait (`serialize_X` methods) converts any and all
+// arbitrary Rust types `T` into `Result`.
+//
+// Monomorphisation is a zero-cost abstraction (no runtime cost). Proc
+// macros (`#[derive(Deserialize)]`) make parsing convenient.
+#[tracing::instrument(
+    // to separate instrumentation (tracing) from execution (i.e. the actual work, in this
+    // case`sqlx::query`), the entire function is wrapped in a span. note that the return value is
+    // wrapped by `tracing`
+    name = "Adding new subscriber", // defaults to fn name
+    // don't log passed args
+    skip(form, pool),
+    fields(
+        // same syntax as info_span
+        // should not be used in conjunction with TracingLogger, as TracingLogger generates its own ids
+        // id = %Uuid::new_v4(), 
+        subscriber_email = %form.email,
+        subscriber_name = %form.name,
+    )
+)]
 pub async fn subscribe(
     form: web::Form<FormData>,
     pool: web::Data<PgPool>,
 ) -> HttpResponse {
-    let id = Uuid::new_v4();
-
-    let req_span = tracing::info_span!(
-        // with `log` feature, tracing events are redirected to `log` automatically
-        // note: formatting is disabled in this macro!
-        "Adding new subscriber",
-        %id, // equivalent to `id = %id`
-        subscriber_email = %form.email, // named key
-        subscriber_name = %form.name,
-    );
-    let _enter = req_span.enter(); // this span is sync
+    // // with `log` feature, tracing events are redirected to `log`
+    // // automatically
+    // let id = Uuid::new_v4();
+    // let req_span = tracing::info_span!(
+    // // note: formatting is disabled in this macro!
+    //     "Adding new subscriber",
+    //     %id, // equivalent to `id = %id`
+    //     subscriber_email = %form.email, // named key
+    //     subscriber_name = %form.name,
+    // );
+    // let _enter = req_span.enter(); // this span is sync
 
     // the span persists until the end of the function, where it is dropped
     //
@@ -88,18 +105,40 @@ pub async fn subscribe(
     // "...[an] `await` keyword may yield, causing the runtime to switch to
     // another task, while remaining in this span!"
     //
-    // when a future (task) is idle, the executor may switch to a different task.
-    // however, the span would be unaware of this switch, and would (sort of) lead
-    // to the interleaving we wanted to avoid in the first place. to correctly
-    // switch spans, use `tracing::Instrument` and attach the span to the async fn
-    let query_span = tracing::info_span!("INSERTing new subscriber into db");
+    // when a future (task) is idle, the executor may switch to a different
+    // task. however, the span would be unaware of this switch, and would
+    // (sort of) lead to the interleaving we wanted to avoid in the first
+    // place. to correctly switch spans, use `tracing::Instrument` and
+    // attach the span to the async fn
 
-    // query is statically checked against db schema at compile time, but postgres
-    // must be running
-    //
-    // (if 'relation does not exist', start postgres and restart LSP)
-    // TODO: error if postgres not started, should be caught
-    match sqlx::query!(
+    match insert_subscriber(&form, &pool).await {
+        Ok(_) => HttpResponse::Ok().finish(),
+        Err(_) => HttpResponse::InternalServerError().finish(),
+    }
+}
+
+/// Only db logic is performed here; this is independent of web framework.
+///
+/// `sqlx::query!` can validate fields at compile time, but this requires
+/// one of the following:
+/// - a `DATABASE_URL` env var declared (typically in `./.env`), and a running
+///   db (online mode)
+/// - a `.sqlx` directory, generated by `cargo sqlx prepare --workspace`
+///   (offline mode)
+// see:
+// https://github.com/launchbadge/sqlx/blob/main/sqlx-cli/README.md#enable-building-in-offline-mode-with-query
+// https://github.com/launchbadge/sqlx/blob/5d6c33ed65cc2d4671a9f569c565ab18f1ea67aa/sqlx-cli/src/prepare.rs#L65
+///
+/// Note that functions marked as `test` are not subject to these compile-time
+/// checks.
+#[tracing::instrument(name = "INSERTing new subscriber into db", skip(form, pool))]
+pub async fn insert_subscriber(
+    form: &FormData,
+    pool: &PgPool,
+) -> Result<(), sqlx::Error> {
+    // let query_span = tracing::info_span!("INSERTing new subscriber into db");
+
+    sqlx::query!(
         "
     INSERT INTO subscriptions (id, email, name, subscribed_at)
     VALUES ($1, $2, $3, $4)
@@ -111,18 +150,12 @@ pub async fn subscribe(
     )
     // `Executor` requires mut ref (sqlx's async does not imply mutex). PgPool handles this, but
     // PgConnection doesn't
-    .execute(pool.get_ref())
-    .instrument(query_span)
+    .execute(pool)
+    // .instrument(query_span)
     .await
-    {
-        Ok(_) => {
-            tracing::info!("Added new subscriber to db");
-            HttpResponse::Ok().finish()
-        }
-        Err(e) => {
-            // note: this is -not- covered by the span!
-            tracing::error!("bad query: {e:?}");
-            HttpResponse::InternalServerError().finish()
-        }
-    }
+    .map_err(|e| {
+        tracing::error!("bad query: {e:?}");
+        e
+    })?;
+    Ok(())
 }

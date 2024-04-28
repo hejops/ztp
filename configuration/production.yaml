@@ -1,0 +1,3 @@
+# prod must be able to accept requests from any origin
+application:
+  host: "0.0.0.0"

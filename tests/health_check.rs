@@ -1,5 +1,7 @@
 use std::net::TcpListener;
 
+use once_cell::sync::Lazy;
+use secrecy::ExposeSecret;
 use sqlx::Connection;
 use sqlx::Executor;
 use sqlx::PgConnection;
@@ -8,6 +10,8 @@ use uuid::Uuid;
 use zero_to_prod::configuration::get_configuration;
 use zero_to_prod::configuration::DatabaseSettings;
 use zero_to_prod::startup;
+use zero_to_prod::telemetry::get_subscriber;
+use zero_to_prod::telemetry::init_subscriber;
 
 // 'no external crate' -- add to Cargo.toml:
 // [lib]
@@ -67,7 +71,7 @@ pub struct TestApp {
 /// connection to this db can then be used to run a single test.
 pub async fn configure_database(cfg: &DatabaseSettings) -> PgPool {
     // connect to the top-level db
-    let mut conn = PgConnection::connect(&cfg.connection_string_without_db())
+    let mut conn = PgConnection::connect(cfg.connection_string_without_db().expose_secret())
         .await
         .expect("postgres must be running; run scripts/init_db.sh");
 
@@ -80,10 +84,46 @@ pub async fn configure_database(cfg: &DatabaseSettings) -> PgPool {
 
     // perform the migration(s) and create the table(s). `migrate!` path defaults to
     // "./migrations", where . is project root
-    let pool = PgPool::connect(&cfg.connection_string()).await.unwrap();
+    let pool = PgPool::connect(cfg.connection_string().expose_secret())
+        .await
+        .unwrap();
     sqlx::migrate!().run(&pool).await.unwrap();
     pool
 }
+
+/// Init a static subscriber using the `once_cell` crate; alternatives include
+/// `std::cell:OnceCell` and `lazy_static` crate.
+// https://docs.rs/once_cell/latest/once_cell/#faq
+// https://users.rust-lang.org/t/lazy-static-vs-once-cell-oncecell/58578
+///
+/// To opt in to verbose logging, use the env var `TEST_LOG`:
+///
+/// ```sh
+///      TEST_LOG=true cargo test [test_name] | bunyan
+/// ```
+static TRACING: Lazy<()> = Lazy::new(|| {
+    // `sink` is passed to `BunyanFormattingLayer::new`, which only requires `impl
+    // MakeWriter`. however, the intuitive/'elegant' solution of assigning 2
+    // different "closure types" to the same var is not allowed by the compiler.
+
+    // let sink = match std::env::var("TEST_LOG") {
+    //     Ok(_) => std::io::stdout,
+    //     Err(_) => std::io::sink,
+    // };
+    // let subscriber = get_subscriber("test", "debug", sink);
+    // init_subscriber(subscriber);
+
+    match std::env::var("TEST_LOG") {
+        Ok(_) => {
+            let subscriber = get_subscriber("test", "debug", std::io::stdout);
+            init_subscriber(subscriber);
+        }
+        Err(_) => {
+            let subscriber = get_subscriber("test", "debug", std::io::sink);
+            init_subscriber(subscriber);
+        }
+    };
+});
 
 // must not be async! https://github.com/LukeMathWalker/zero-to-production/issues/242#issuecomment-1915933810
 /// Spawn a `TestApp` containing default config, which can be used for testing;
@@ -96,6 +136,9 @@ pub async fn configure_database(cfg: &DatabaseSettings) -> PgPool {
 /// well as the address to the (randomised) postgres connection.
 /// The `http://` prefix is important, as this is the address that clients will send requests to.
 async fn spawn_app() -> TestApp {
+    // init the subscriber once only
+    Lazy::force(&TRACING);
+
     // port 0 is reserved by the OS; the server will be spawned on an address with a
     // random available port. this address/port must then be made known to clients
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -160,9 +203,6 @@ async fn subscribe_ok() {
     // this endpoint is non-trivial to implement, the check can be done inside
     // the test ('server-side')
 
-    // sqlx::query! can validate fields at compile time, but this requires the
-    // DATABASE_URL env var to be declared (in ./.env). note that env vars are
-    // loaded when the LSP is, so modifying one requires an LSP restart
     let added = sqlx::query!("SELECT email, name FROM subscriptions")
         .fetch_one(&app.pool)
         .await

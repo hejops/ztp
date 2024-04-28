@@ -1,9 +1,0 @@
-# used to alter the runtime behaviour of the application after it has been
-# compiled
-application_port: 8000
-database:
-  host: "127.0.0.1"
-  port: 5432
-  username: "postgres"
-  password: "password"
-  database_name: "newsletter"

@@ -1,0 +1,19 @@
+# used to alter the runtime behaviour of the application after it has been
+# compiled
+#
+# configs need to be generalisable across dev and prod environments.
+# from least abstracted to most 'ergonomic', the options include:
+#
+# 1. single hardcoded config file
+# 2. single base config with multiple env vars
+# 3. single base config with multiple env-specific config files, and a single
+#    env var determining which env-specific file(s) to load
+application:
+  # host: "127.0.0.1"
+  port: 8000
+database:
+  host: "localhost"
+  port: 5432
+  username: "postgres"
+  password: "password"
+  database_name: "newsletter"

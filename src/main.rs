@@ -1,15 +1,11 @@
 use std::net::TcpListener;
 
+use secrecy::ExposeSecret;
 use sqlx::PgPool;
-use tracing::subscriber::set_global_default;
-use tracing_bunyan_formatter::BunyanFormattingLayer;
-use tracing_bunyan_formatter::JsonStorageLayer;
-use tracing_log::LogTracer;
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::EnvFilter;
-use tracing_subscriber::Registry;
 use zero_to_prod::configuration::get_configuration;
 use zero_to_prod::startup::run;
+use zero_to_prod::telemetry::get_subscriber;
+use zero_to_prod::telemetry::init_subscriber;
 
 // note how async must be propagated everywhere;
 // "unless polled, there is no guarantee that [futures] will execute to
@@ -23,17 +19,8 @@ async fn main() -> Result<(), std::io::Error> {
     // env_logger::Builder::from_env(Env::default().default_filter_or("info")).
     // init();
 
-    // required for `actix_web` logs to be captured by `Subscriber`
-    LogTracer::init().unwrap();
-
-    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")); // requires feature `env-filter`
-    let fmt_layer = BunyanFormattingLayer::new("ztp".into(), std::io::stdout);
-    let subscriber = Registry::default()
-        // does order matter?
-        .with(env_filter)
-        .with(JsonStorageLayer)
-        .with(fmt_layer);
-    set_global_default(subscriber).unwrap();
+    let subscriber = get_subscriber("ztp", "info", std::io::stdout);
+    init_subscriber(subscriber);
 
     // notes:
     // - `msg` (defined in span) is always all-caps
@@ -41,18 +28,37 @@ async fn main() -> Result<(), std::io::Error> {
     // - only END events have elapsed_milliseconds key
     // {"v":0,"name":"ztp","msg":"[ADDING NEW SUBSCRIBER - EVENT] Added new subscriber to db","level":30,"hostname":"hostname","pid":53179,"time":"2024-04-23T07:48:23.364866355Z","target":"zero_to_prod::routes::subscriptions","line":119,"file":"src/routes/subscriptions.rs","id":"5214805c-3998-407a-b4e4-bdd796a81be6","subscriber_name":"John","subscriber_email":"john@foo.com"}
 
+    // 127.0.0.1 is a 'magic' address that refers to localhost, i.e. "this machine".
+    //
+    // https://serverfault.com/a/502721
+    // https://www.rfc-editor.org/rfc/rfc5735#section-3
+    //
+    // when server is bound to this address, the server only accepts (listens to)
+    // requests originating from the same machine. thus, requests can be made as
+    // host:curl -> host:server (dev), but not host:curl -> container:server.
+    //
+    // thus, the prod server should be made to accept requests originating from any
+    // address
+
     // let addr = "127.0.0.1:0"; // randomised port
     let cfg = get_configuration().unwrap();
-    let addr = format!("127.0.0.1:{}", cfg.application_port); // hardcoded 8000
+
+    // // hardcoded localhost:8000
+    // let addr = format!("127.0.0.1:{}", cfg.application.port);
+
+    let addr = format!("{}:{}", cfg.application.host, cfg.application.port);
     let listener = TcpListener::bind(addr)?;
 
     // taken from subscribe_ok
     let cfg = get_configuration().unwrap();
-    let conn = PgPool::connect(&cfg.database.connection_string())
-        .await
-        .expect("postgres must be running; run scripts/init_db.sh");
+    let pool = PgPool::
+        // connect(cfg.database.connection_string().expose_secret()).await
+        // only connect when the pool is used for the first time (this is not async)
+        connect_lazy(cfg.database.connection_string().expose_secret())
+    .expect("postgres must be running; run scripts/init_db.sh");
 
-    run(listener, conn)?.await
+    // note: our `run` function is now wrapped by tokio (so LSP can't reach it)
+    run(listener, pool)?.await
 }
 
 // /// when expanded with `cargo expand`

@@ -1,11 +1,11 @@
 use std::net::TcpListener;
 
 use actix_web::dev::Server;
-use actix_web::middleware::Logger;
 use actix_web::web;
 use actix_web::App;
 use actix_web::HttpServer;
 use sqlx::PgPool;
+use tracing_actix_web::TracingLogger;
 
 use crate::routes::health_check;
 use crate::routes::subscribe;
@@ -66,7 +66,8 @@ pub fn run(
         // e.g. /name=john&email=foo%40bar.com (application/x-www-form-urlencoded)
 
         App::new()
-            .wrap(Logger::default())
+            // .wrap(Logger::default())
+            .wrap(TracingLogger::default()) // wrap the whole app in tracing middleware
             .route("/health_check", web::get().to(health_check))
             // remember, the guard must match the client's request type
             .route("/subscriptions", web::post().to(subscribe))
@@ -74,12 +75,15 @@ pub fn run(
             .app_data(pool.clone())
 
         // .route("/", web::get().to(greet))
+        //
         // web::get() is syntactic sugar for:
         // .route("/", actix_web::Route::new().guard(actix_web::guard::Get()))
-        // .route("/{name}", web::get().to(greet))
+        //
         // `name` is just an arg; the captured value is passed to the handler
         // function at runtime, where it should be extracted
         // (try changing `name` to `foo` both here and in `greet`)
+        //
+        // .route("/{name}", web::get().to(greet))
         //
         // https://actix.rs/docs/url-dispatch/#resource-pattern-syntax
     })
