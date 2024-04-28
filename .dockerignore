@@ -1,0 +1,9 @@
+# https://docs.docker.com/build/building/context/#dockerignore-files
+.env
+Dockerfile
+
+migrations/
+scripts/
+target/
+tests/
+
