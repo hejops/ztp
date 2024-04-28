@@ -1,5 +1,7 @@
 # to (re)build:
 # sudo docker build --tag ztp --file Dockerfile .
+#
+# note: when hosted, docker pull is used instead to skip the slow build
 
 # to run:
 # sudo docker run ztp
@@ -19,32 +21,38 @@
 #
 # https://docs.docker.com/config/daemon/#daemon-data-directory
 # https://wiki.archlinux.org/title/Docker#Configuration
+#
+# to reduce image size, ignore target in .dockerignore, discard compilation
+# artifacts, and use slim image:
+#
+# rust 1.77.2 base: 1.41 GB
+# default build: 5.94
+# dockerignore target/: 3.16
+# discard build runtime: 1.43
+# slim: 0.77
 
-# REPOSITORY       TAG       IMAGE ID       CREATED          SIZE
-# ztp              latest    96f8dfc4bc01   20 seconds ago   5.94GB
-# rust             1.77.2    14bb4f02fb0e   2 weeks ago      1.41GB
-
-# note: to build this image successfully, at least 6 GB disk space is required
-# (2.8 for build context), as well as sqlx offline mode (i.e. a .sqlx
-# directory; .env is not read in docker).
-
+# note: to build this image successfully, sqlx offline mode is required, as
+# .env is not read in docker. i.e. generate a .sqlx directory with:
 # cargo sqlx prepare --workspace
 
 # https://hub.docker.com/_/rust/
 # FROM rust:1.72.0
 
+# build (this image will be discarded)
+
 # sqlx 0.7 is incompatible with rust 1.72.0, apparently
 # https://github.com/LukeMathWalker/zero-to-production/issues/259
-FROM rust:1.77.2
+FROM rust:1.77.2-slim AS builder
 
 # WORKDIR = mkdir + cd
 # https://docs.docker.com/reference/dockerfile/#workdir
 WORKDIR /app
 
 # Install the required system dependencies for our linking configuration
-RUN apt update && apt install lld clang -y
+# note: the slim image lacks some dependencies
+# RUN apt update && apt install lld clang -y
+RUN apt update && apt install pkg-config libssl-dev lld clang -y
 
-# Copy all files from our working environment to our Docker image
 # "paths of files and directories [of <src>] will be interpreted as **relative
 # to the source of the context of the build**"
 # i.e. first . is the local machine, second . is the image
@@ -61,13 +69,19 @@ RUN cargo build --release
 ENV APP_ENVIRONMENT production
 ENTRYPOINT ["./target/release/zero-to-prod"]
 
+# release
+
+FROM rust:1.77.2-slim AS runtime
+WORKDIR /app
+COPY --from=builder /app/target/release/zero-to-prod zero-to-prod
+# We need the configuration file at runtime!
+COPY configuration configuration
+ENV APP_ENVIRONMENT production
+ENTRYPOINT ["./zero-to-prod"]
+
 # sudo docker run ztp
 # curl http://127.0.0.1:8000/health_check -v
 #
-# *   Trying 127.0.0.1:8000...
-# * connect to 127.0.0.1 port 8000 from 127.0.0.1 port 33650 failed: Connection refused
-# * Failed to connect to 127.0.0.1 port 8000 after 0 ms: Couldn't connect to server
-# * Closing connection
 # curl: (7) Failed to connect to 127.0.0.1 port 8000 after 0 ms: Couldn't connect to server
 #
 # docker did not establish port 8000
@@ -79,12 +93,6 @@ ENTRYPOINT ["./target/release/zero-to-prod"]
 # * Connected to 127.0.0.1 (127.0.0.1) port 8000
 # > GET /health_check HTTP/1.1
 # > Host: 127.0.0.1:8000
-# > User-Agent: curl/8.7.1
-# > Accept: */*
-# >
-# * Request completely sent off
-# * Recv failure: Connection reset by peer
-# * Closing connection
 # curl: (56) Recv failure: Connection reset by peer
 #
 # docker established port 8000, but the request (from host) was not registered,
