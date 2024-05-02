@@ -1,7 +1,6 @@
 use std::net::TcpListener;
 
 use once_cell::sync::Lazy;
-use secrecy::ExposeSecret;
 use sqlx::Connection;
 use sqlx::Executor;
 use sqlx::PgConnection;
@@ -71,7 +70,7 @@ pub struct TestApp {
 /// connection to this db can then be used to run a single test.
 pub async fn configure_database(cfg: &DatabaseSettings) -> PgPool {
     // connect to the top-level db
-    let mut conn = PgConnection::connect(cfg.connection_string_without_db().expose_secret())
+    let mut conn = PgConnection::connect_with(&cfg.connection_without_db())
         .await
         .expect("postgres must be running; run scripts/init_db.sh");
 
@@ -84,9 +83,7 @@ pub async fn configure_database(cfg: &DatabaseSettings) -> PgPool {
 
     // perform the migration(s) and create the table(s). `migrate!` path defaults to
     // "./migrations", where . is project root
-    let pool = PgPool::connect(cfg.connection_string().expose_secret())
-        .await
-        .unwrap();
+    let pool = PgPool::connect_with(cfg.connection()).await.unwrap();
     sqlx::migrate!().run(&pool).await.unwrap();
     pool
 }
@@ -178,6 +175,8 @@ async fn health_check() {
         .await
         .expect("execute request");
     assert!(resp.status().is_success());
+
+    // note that the last statement is wrapped by `tokio`
     assert_eq!(resp.content_length().unwrap(), 0); // empty body
 }
 
@@ -235,7 +234,7 @@ async fn subscribe_invalid() {
     let app = spawn_app().await;
     let client = reqwest::Client::new();
 
-    // for parametrised testing, use rstest
+    // for parametrised testing, use `rstest`
     for (body, msg) in [
         ("name=john", "no email"),
         ("email=foo%40bar.com", "no name"),

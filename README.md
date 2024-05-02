@@ -1,4 +1,4 @@
-# Zero to production
+# Zero to Production
 
 <!-- good review(s) of the book: -->
 <!-- https://bitemyapp.com/blog/notes-on-zero2prod-rust/ -->
@@ -14,20 +14,18 @@
   represent
 
 - code must be expressive enough to solve the problem, but flexible enough
-  to be allowed to evolve. run first, optimise later
+  to be allowed to evolve; run first, optimise later
 
 ## Ch 1
 
 - installation, tooling, CI
-
 - inner development loop: write, compile, run, test
 
 1. faster linking with lld:
 
    ```toml
-   # - Arch, `sudo pacman -S lld clang`
-
-   Cargo.toml
+   # Arch: `sudo pacman -S lld clang`
+   # Cargo.toml
    [target.x86_64-unknown-linux-gnu]
    rustflags = ["-C", "linker=clang", "-C", "link-arg=-fuse-ld=lld"]
    ```
@@ -36,7 +34,7 @@
 
    ```sh
    cargo install cargo-watch
-   cargo watch -x check -x test -x run
+   cargo watch -x test -x run
    ```
 
 1. code coverage:

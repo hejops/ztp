@@ -1,6 +1,5 @@
 use std::net::TcpListener;
 
-use secrecy::ExposeSecret;
 use sqlx::PgPool;
 use zero_to_prod::configuration::get_configuration;
 use zero_to_prod::startup::run;
@@ -57,8 +56,9 @@ async fn main() -> Result<(), std::io::Error> {
         // db-free requests (e.g. health_check) to avoid init'ing the db. however, attempting to
         // init the db when it is not yet configured (e.g. in docker) will cause HTTP
         // 500 to be returned
-        connect_lazy(cfg.database.connection_string().expose_secret())
-    .expect("postgres must be running; run scripts/init_db.sh");
+    //     connect_lazy(cfg.database.connection().expose_secret()) // &str
+    // .expect("postgres must be running; run scripts/init_db.sh");
+    connect_lazy_with(cfg.database.connection()); // PgConnectOptions
 
     // note: our `run` function is now wrapped by tokio (so LSP can't reach it)
     run(listener, pool)?.await

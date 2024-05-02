@@ -11,9 +11,14 @@
 application:
   # host: "127.0.0.1"
   port: 8000
+
+# identical to env, used to construct the db connection string, i.e.
+# "postgres://postgres:password@localhost:5432/newsletter"
 database:
   host: "localhost"
+  # parsing to int requires serde-aux
   port: 5432
+  # secret!
   username: "postgres"
   password: "password"
   database_name: "newsletter"

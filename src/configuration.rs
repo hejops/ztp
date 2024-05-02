@@ -7,6 +7,8 @@ use config::ConfigError;
 use secrecy::ExposeSecret;
 use secrecy::Secret;
 use serde::Deserialize;
+use serde_aux::field_attributes::deserialize_number_from_string;
+use sqlx::postgres::PgConnectOptions;
 
 /// Global configuration, loaded from configuration.yaml. See
 /// `get_configuration`.
@@ -21,7 +23,9 @@ pub struct Settings {
 pub struct ApplicationSettings {
     /// Should be localhost on dev machine, 0.0.0.0 on prod
     pub host: String,
+
     /// Port for the server, currently hardcoded to 8000
+    #[serde(deserialize_with = "deserialize_number_from_string")]
     pub port: u16,
 }
 
@@ -30,39 +34,51 @@ pub struct ApplicationSettings {
 pub struct DatabaseSettings {
     pub username: String,
     pub password: Secret<String>,
+
     /// Hardcoded to localhost
     pub host: String,
-    /// Port for the postgres database. This will be different from that of the
-    /// server, currently hardcoded to 5432.
+
+    /// Port for the postgres database, which will be different from that of the
+    /// server. Currently hardcoded to 5432.
+    #[serde(deserialize_with = "deserialize_number_from_string")]
     pub port: u16,
     pub database_name: String,
+
+    /// Should be `true` in production.
+    /// https://www.postgresql.org/docs/current/libpq-ssl.html#LIBPQ-SSL-SSLMODE-STATEMENTS
+    pub require_ssl: bool,
 }
 
 impl DatabaseSettings {
-    /// Return string representation of the database connection. The db password
-    /// is concealed.
-    pub fn connection_string(&self) -> Secret<String> {
-        Secret::new(format!(
-            "postgres://{}:{}@{}:{}/{}",
-            self.username,
-            self.password.expose_secret(),
-            self.host,
-            self.port,
-            self.database_name,
-        ))
+    /// Return connection to a named database (declared in config file). The db
+    /// password is concealed.
+    pub fn connection(&self) -> PgConnectOptions {
+        self.connection_without_db().database(&self.database_name)
+        // this appears in the book, but not in the repo
+        // https://github.com/LukeMathWalker/zero-to-production/issues/231
+        // .log_statements(tracing_log::log::LevelFilter::Trace)
     }
 
-    /// Return string representation of the Postgres instance (instead of a
-    /// specific db). This is typically used to init a randomised db for
-    /// testing.
-    pub fn connection_string_without_db(&self) -> Secret<String> {
-        Secret::new(format!(
-            "postgres://{}:{}@{}:{}",
-            self.username,
-            self.password.expose_secret(),
-            self.host,
-            self.port,
-        ))
+    /// Return connection to the Postgres instance (instead of a specific db),
+    /// i.e. `database_name` is unset. This is typically used to init a
+    /// randomised db for testing.
+    pub fn connection_without_db(&self) -> PgConnectOptions {
+        // Secret::new(format!(
+        //     "postgres://{}:{}@{}:{}",
+        //     self.username,
+        //     self.password.expose_secret(),
+        //     self.host,
+        //     self.port,
+        // ));
+        PgConnectOptions::new()
+            .username(&self.username)
+            .password(self.password.expose_secret())
+            .host(&self.host)
+            .port(self.port)
+            .ssl_mode(match self.require_ssl {
+                true => sqlx::postgres::PgSslMode::Require,
+                false => sqlx::postgres::PgSslMode::Prefer,
+            })
     }
 }
 
@@ -99,7 +115,7 @@ impl TryFrom<String> for Environment {
     }
 }
 
-/// Load yaml configuration files at configuration.
+/// Load yaml configuration files at `<project_root>/configuration`.
 ///
 /// All fields must be present in these files, otherwise initialisation will
 /// fail immediately, and the server will not start. Invalid configuration is
@@ -120,6 +136,18 @@ pub fn get_configuration() -> Result<Settings, ConfigError> {
         // ))
         .add_source(config::File::from(cfg_dir.join("base.yaml")))
         .add_source(config::File::from(cfg_dir.join(format!("{env}.yaml"))))
+        .add_source(
+            // source env vars, which can be (re?)loaded at runtime, avoiding recompilation. note:
+            // env vars are -always- parsed as String, `serde-aux` is required to parse other
+            // types.
+            //
+            // these env vars are to be declared in spec.yaml (under services:envs):
+            //
+            // `APP_APPLICATION__PORT=5001` -> `Settings.application.port`
+            config::Environment::with_prefix("APP")
+                .prefix_separator("_")
+                .separator("__"),
+        )
         .build()?;
 
     settings.try_deserialize()
