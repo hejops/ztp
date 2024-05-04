@@ -73,11 +73,6 @@ services:
         scope: RUN_TIME
         value: ${newsletter.DATABASE}
 
-# default `sslmode` is `require` which means "I want my data to be encrypted,
-# and I accept the overhead. I trust that the network will make sure I always
-# connect to the server I want." -- no transport level encryption
-# https://www.postgresql.org/docs/current/libpq-ssl.html#LIBPQ-SSL-SSLMODE-STATEMENTS
-
 databases:
   # note: init'ing a db takes about 5-10 mins, has no logs
   - engine: PG

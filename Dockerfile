@@ -115,7 +115,7 @@ COPY --from=builder /app/target/release/zero-to-prod zero-to-prod
 COPY configuration configuration
 ENV APP_ENVIRONMENT production
 # the binary name corresponds to the `name` declared in Cargo.toml
-ENTRYPOINT ["./zero-to-prod"]
+ENTRYPOINT ["RUST_BACKTRACE=1", "./zero-to-prod"]
 
 # sudo docker run ztp
 # curl http://127.0.0.1:8000/health_check -v

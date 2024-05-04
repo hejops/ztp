@@ -75,6 +75,13 @@ impl DatabaseSettings {
             .password(self.password.expose_secret())
             .host(&self.host)
             .port(self.port)
+            // digitalocean's default `sslmode` is `require`, which means: "I want my data to be
+            // encrypted, and I accept the overhead. I trust that the network will make sure I
+            // always connect to the server I want."
+            //
+            // https://www.postgresql.org/docs/current/libpq-ssl.html#LIBPQ-SSL-SSLMODE-STATEMENTS
+            //
+            // so we should adhere to this, and provide transport level encryption
             .ssl_mode(match self.require_ssl {
                 true => sqlx::postgres::PgSslMode::Require,
                 false => sqlx::postgres::PgSslMode::Prefer,
