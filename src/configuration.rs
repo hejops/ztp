@@ -128,12 +128,16 @@ impl TryFrom<String> for Environment {
 /// fail immediately, and the server will not start. Invalid configuration is
 /// not yet checked.
 pub fn get_configuration() -> Result<Settings, ConfigError> {
-    let cfg_dir = current_dir().unwrap().join("configuration");
+    let cfg_dir = current_dir()
+        .expect("could not get current dir")
+        .join("configuration");
 
     let env: Environment = env::var("APP_ENVIRONMENT")
         .unwrap_or("local".to_string())
         .try_into()
-        .unwrap();
+        .expect("could not initiate Environment struct");
+
+    print!("loading config for {env} env");
 
     let settings = Config::builder()
         // // naive single-file config
@@ -157,5 +161,5 @@ pub fn get_configuration() -> Result<Settings, ConfigError> {
         )
         .build()?;
 
-    settings.try_deserialize()
+    settings.try_deserialize::<Settings>()
 }

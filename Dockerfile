@@ -114,7 +114,7 @@ COPY --from=builder /app/target/release/zero-to-prod zero-to-prod
 # We need the configuration file at runtime!
 COPY configuration configuration
 ENV APP_ENVIRONMENT production
-ENV RUST_BACKTRACE full
+# ENV RUST_BACKTRACE full
 # the binary name corresponds to the `name` declared in Cargo.toml
 ENTRYPOINT ["./zero-to-prod"]
 
