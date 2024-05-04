@@ -42,14 +42,13 @@ async fn main() -> Result<(), std::io::Error> {
     // let addr = "127.0.0.1:0"; // randomised port
     let cfg = get_configuration().unwrap();
 
-    // // hardcoded localhost:8000
+    // // hardcoded host (localhost), fixed port (8000)
     // let addr = format!("127.0.0.1:{}", cfg.application.port);
 
+    // env-dependent host
     let addr = format!("{}:{}", cfg.application.host, cfg.application.port);
     let listener = TcpListener::bind(addr)?;
 
-    // taken from subscribe_ok
-    let cfg = get_configuration().unwrap();
     let pool = PgPool::
         // connect(cfg.database.connection_string().expose_secret()).await
         // only connect when the pool is used for the first time (this is not async). this allows
