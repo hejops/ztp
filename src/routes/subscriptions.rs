@@ -15,6 +15,27 @@ pub struct FormData {
     email: String,
 }
 
+// personally i would've placed this in `new_subscriber`, but this requires
+// `FormData`'s fields to be `pub`
+impl TryFrom<FormData> for NewSubscriber {
+    type Error = String;
+    fn try_from(value: FormData) -> Result<Self, Self::Error> {
+        let name = SubscriberName::parse(value.name)?;
+        let email = SubscriberEmail::parse(value.email)?;
+
+        let new_sub = NewSubscriber {
+            // // can be done if the field is `pub` (which it isn't)
+            // name: SubscriberName(name.clone()),
+            // // `.0` is required to access the fields in `FormData` (this is not documented in
+            // // `Form` apparently)
+            // name: SubscriberName::parse(name).unwrap(),
+            name,
+            email,
+        };
+        Ok(new_sub)
+    }
+}
+
 // validation is inherently not robust, because, in the worst case, it has to be
 // performed at every callsite. importantly, validation is performed at runtime,
 // so the compiler will -not- catch validation errors.
@@ -139,24 +160,15 @@ pub async fn subscribe(
     //     return HttpResponse::BadRequest().finish();
     // }
 
-    let name = match SubscriberName::parse(form.0.name) {
+    // let new_sub = match NewSubscriber::new(form.0.name, form.0.email) {
+    // implementing either `TryFrom` or `TryInto` automatically implements the other
+    // one for free; try_into() is generally preferred since it uses `.` instead
+    // of `::`
+    // let new_sub = match NewSubscriber::try_from(form.0) {
+    let new_sub = match form.0.try_into() {
         Ok(n) => n,
+        // unfortunately we can't do ?-style early return/method chaining with HttpResponse
         Err(_) => return HttpResponse::BadRequest().finish(),
-    };
-
-    let email = match SubscriberEmail::parse(form.0.email) {
-        Ok(e) => e,
-        Err(_) => return HttpResponse::BadRequest().finish(),
-    };
-
-    let new_sub = NewSubscriber {
-        // // can be done if the field is `pub` (which it isn't)
-        // name: SubscriberName(form.0.name.clone()),
-        // // `.0` is required to access the fields in `FormData` (this is not documented in `Form`
-        // // apparently)
-        // name: SubscriberName::parse(form.0.name).unwrap(),
-        name,
-        email,
     };
 
     // coerce sqlx::Error into http 500
