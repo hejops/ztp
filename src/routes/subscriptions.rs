@@ -6,6 +6,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::domain::NewSubscriber;
+use crate::domain::SubscriberEmail;
 use crate::domain::SubscriberName;
 
 #[derive(Deserialize)]
@@ -143,14 +144,19 @@ pub async fn subscribe(
         Err(_) => return HttpResponse::BadRequest().finish(),
     };
 
+    let email = match SubscriberEmail::parse(form.0.email) {
+        Ok(e) => e,
+        Err(_) => return HttpResponse::BadRequest().finish(),
+    };
+
     let new_sub = NewSubscriber {
         // // can be done if the field is `pub` (which it isn't)
         // name: SubscriberName(form.0.name.clone()),
-        // `.0` is required to access the fields in `FormData` (this is not documented in `Form`
-        // apparently)
-        // name: SubscriberName::parse(form.0.name).unwrap(), // need to Err to Http 500
+        // // `.0` is required to access the fields in `FormData` (this is not documented in `Form`
+        // // apparently)
+        // name: SubscriberName::parse(form.0.name).unwrap(),
         name,
-        email: form.0.email,
+        email,
     };
 
     // coerce sqlx::Error into http 500
@@ -196,7 +202,7 @@ pub async fn insert_subscriber(
     VALUES ($1, $2, $3, $4)
 ",
         Uuid::new_v4(),
-        new_sub.email,
+        new_sub.email.as_ref(),
         new_sub.name.as_ref(),
         Utc::now(),
     )
