@@ -1,7 +1,6 @@
 use std::collections::HashSet;
 
 use unicode_segmentation::UnicodeSegmentation;
-
 // basic tuple struct (single unnamed private field)
 /// A struct that parses user-submitted `name` and enforces constraints, namely:
 /// reject empty/whitespace, enforce maximum length, reject some problematic
@@ -35,11 +34,6 @@ impl SubscriberName {
 
 impl AsRef<str> for SubscriberName {
     fn as_ref(&self) -> &str { &self.0 }
-}
-
-pub struct NewSubscriber {
-    pub name: SubscriberName,
-    pub email: String,
 }
 
 #[cfg(test)]
