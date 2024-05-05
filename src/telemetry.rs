@@ -8,6 +8,8 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::Registry;
 
+/// 'subscriber' is a `tracing` trait, and is not to be confused with a
+/// subscriber of the newsletter!
 /// Note: `sink` must be a closure (e.g. `std::io::stdout`), not a return value.
 pub fn get_subscriber<Sink>(
     name: &str,

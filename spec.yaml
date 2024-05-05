@@ -22,6 +22,16 @@
 # doctl apps list -o json | jq -r '.[] | .live_url' | append /health_check | xargs curl -v
 # doctl apps list -o json | jq -r '.[] | .id' | xargs doctl apps update --spec=spec.yaml
 
+# after init, get connection string from DO GUI (`doctl databases list` doesn't
+# seem to show anything)
+#
+# xdg-open "https://cloud.digitalocean.com/apps/$(doctl apps list -o json | jq -r '.[] | .id')/settings/db"
+#
+# perform migration (Trusted Sources must be disabled, for now)
+# DATABASE_URL='postgresql://db:...' sqlx migrate run
+#
+# doctl apps list -o json | jq -r '.[] | .live_url' | append /subscriptions | xargs curl -v -d 'email=john@foo.com&name=John'
+
 name: ztp
 # https://www.digitalocean.com/docs/platform/availability-matrix/
 region: fra
@@ -56,6 +66,9 @@ services:
 
     # use the connection of the PG db provided by digitalocean to declare env
     # vars (at runtime only), which will then be made available to the server
+    # important: the db name must correspond to the one declared below!
+    # note that reloading env vars requires the app to be destroyed (push won't
+    # suffice)
     envs:
       - key: APP_DATABASE__USERNAME
         scope: RUN_TIME

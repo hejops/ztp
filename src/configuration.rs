@@ -137,7 +137,7 @@ pub fn get_configuration() -> Result<Settings, ConfigError> {
         .try_into()
         .expect("could not initiate Environment struct");
 
-    print!("loading config for {env} env");
+    // print!("loading config for {env} env");
 
     let settings = Config::builder()
         // // naive single-file config

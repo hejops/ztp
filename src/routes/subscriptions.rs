@@ -5,11 +5,32 @@ use serde::Deserialize;
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use crate::domain::NewSubscriber;
+use crate::domain::SubscriberName;
+
 #[derive(Deserialize)]
 pub struct FormData {
     name: String,
     email: String,
 }
+
+// validation is inherently not robust, because, in the worst case, it has to be
+// performed at every callsite. importantly, validation is performed at runtime,
+// so the compiler will -not- catch validation errors.
+//
+// in contrast, parsing can be done just once to transform unstructured data
+// into a structured representation (i.e. a struct), which can then be passed
+// around with confidence in its correctness, due to compile-time checks.
+
+// /// Basic checks on user-submitted `name`, namely: enforce maximum length,
+// /// reject some problematic characters
+// pub fn is_valid_name(name: &str) -> bool {
+//     let empty = name.trim().is_empty();
+//     let too_long = name.graphemes(true).count() > 256;
+//     let bad_chars: HashSet<char> = r#"/()"<>\{}"#.chars().collect();
+//     let bad = name.chars().any(|c| bad_chars.contains(&c));
+//     !empty && !too_long && !bad
+// }
 
 /// `POST`. `form` is raw HTML, which is ultimately deserialized into a SQL
 /// `INSERT` query.
@@ -112,7 +133,28 @@ pub async fn subscribe(
     // place. to correctly switch spans, use `tracing::Instrument` and
     // attach the span to the async fn
 
-    match insert_subscriber(&form, &pool).await {
+    // // naive string validation
+    // if !is_valid_name(&form.name) {
+    //     return HttpResponse::BadRequest().finish();
+    // }
+
+    let name = match SubscriberName::parse(form.0.name) {
+        Ok(n) => n,
+        Err(_) => return HttpResponse::BadRequest().finish(),
+    };
+
+    let new_sub = NewSubscriber {
+        // // can be done if the field is `pub` (which it isn't)
+        // name: SubscriberName(form.0.name.clone()),
+        // `.0` is required to access the fields in `FormData` (this is not documented in `Form`
+        // apparently)
+        // name: SubscriberName::parse(form.0.name).unwrap(), // need to Err to Http 500
+        name,
+        email: form.0.email,
+    };
+
+    // coerce sqlx::Error into http 500
+    match insert_subscriber(&new_sub, &pool).await {
         Ok(_) => HttpResponse::Ok().finish(),
         Err(_) => HttpResponse::InternalServerError().finish(),
     }
@@ -133,12 +175,20 @@ pub async fn subscribe(
 /// Notes:
 /// - functions marked as `test` are not subject to these compile-time checks
 /// - conversely, `test` functions cannot be aware of offline mode
-#[tracing::instrument(name = "INSERTing new subscriber into db", skip(form, pool))]
+#[tracing::instrument(name = "INSERTing new subscriber into db", 
+    // skip(form, pool)
+    skip(new_sub, pool)
+)]
 pub async fn insert_subscriber(
-    form: &FormData,
+    // form: &FormData,
+    new_sub: &NewSubscriber,
     pool: &PgPool,
 ) -> Result<(), sqlx::Error> {
     // let query_span = tracing::info_span!("INSERTing new subscriber into db");
+
+    // general threats to protect against include: SQL injection, denial of service,
+    // data theft, phishing. it is not necessary to deal with all of these at
+    // the outset, but it is good to keep them in mind
 
     sqlx::query!(
         "
@@ -146,8 +196,8 @@ pub async fn insert_subscriber(
     VALUES ($1, $2, $3, $4)
 ",
         Uuid::new_v4(),
-        form.email,
-        form.name,
+        new_sub.email,
+        new_sub.name.as_ref(),
         Utc::now(),
     )
     // `Executor` requires mut ref (sqlx's async does not imply mutex). PgPool handles this, but

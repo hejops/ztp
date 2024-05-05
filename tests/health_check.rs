@@ -180,6 +180,7 @@ async fn health_check() {
     assert_eq!(resp.content_length().unwrap(), 0); // empty body
 }
 
+/// Test the `/subscriptions` endpoint with valid request
 #[tokio::test]
 async fn subscribe_ok() {
     let app = spawn_app().await;
@@ -229,6 +230,22 @@ async fn subscribe_ok() {
     // (13 rows)
 }
 
+// by default, calling assert!(foo.is_ok()) does not reveal the `Err` in cargo
+// test:
+//
+// ---- dummy_fail stdout ----
+// thread 'dummy_fail' panicked at tests/health_check.rs:236:5:
+// assertion failed: result.is_ok()
+//
+// with claims::assert_ok(result):
+//
+// ---- dummy_fail stdout ----
+// thread 'dummy_fail' panicked at tests/health_check.rs:244:5:
+// assertion failed, expected Ok(..), got Err("The app crashed due to an IO
+// error")
+
+/// Test the `/subscriptions` endpoint with invalid requests (missing/invalid
+/// fields)
 #[tokio::test]
 async fn subscribe_invalid() {
     let app = spawn_app().await;
@@ -236,9 +253,15 @@ async fn subscribe_invalid() {
 
     // for parametrised testing, use `rstest`
     for (body, msg) in [
-        ("name=john", "no email"),
-        ("email=foo%40bar.com", "no name"),
-        ("", "empty"),
+        ("", "null"),
+        ("name=john", "null email"),
+        ("email=foo%40bar.com", "null name"),
+        // confusingly, the book first tests that invalid inputs return 200, only changing it 400
+        // later
+        // https://github.com/LukeMathWalker/zero-to-production/commit/6db241eef
+        ("name=&email=foo%40bar.com", "empty name"),
+        ("name=john&email=", "empty email"),
+        ("name=john&email=not-an-email", "invalid email"),
     ] {
         let resp = client
             .post(format!("{}/subscriptions", app.addr))
