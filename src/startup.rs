@@ -4,18 +4,87 @@ use actix_web::dev::Server;
 use actix_web::web;
 use actix_web::App;
 use actix_web::HttpServer;
+use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
 use tracing_actix_web::TracingLogger;
 
+use crate::configuration::DatabaseSettings;
+use crate::configuration::Settings;
 use crate::email_client::EmailClient;
 use crate::routes::health_check;
 use crate::routes::subscribe;
 
+/// Wrapper for actix's `Server` with access to the bound port. Not to be
+/// confused with actix's `App`!
+pub struct Application {
+    /// Left private; use `get_port` to access
+    port: u16,
+    /// Contains the following components: TCP listener (randomised port), db
+    /// pool (fixed port), and email client
+    server: Server,
+}
+
+impl Application {
+    /// Wrapper over `startup::run` that builds a `Server`
+    pub async fn build(cfg: Settings) -> Result<Self, std::io::Error> {
+        // // hardcoded host (localhost), fixed port (8000)
+        // let addr = format!("127.0.0.1:{}", cfg.application.port);
+
+        // env-dependent host
+        let addr = format!("{}:{}", cfg.application.host, cfg.application.port);
+        let listener = TcpListener::bind(addr)?;
+
+        // get the randomised port assigned by OS; this will be saved in the `port`
+        // field
+        let port = listener.local_addr().unwrap().port();
+
+        // connect_lazy only connects when the pool is used for the first time (this is
+        // not async). this allows db-free requests (e.g. health_check) to avoid
+        // init'ing the db. however, attempting to init the db when it is -not- yet
+        // configured (e.g. in docker) will cause HTTP 500 to be returned
+
+        // let pool = PgPool::
+        //     // connect(cfg.database.connection_string().expose_secret()).await
+        // //     connect_lazy(cfg.database.connection().expose_secret()) // &str
+        // // .expect("postgres must be running; run scripts/init_db.sh");
+        // connect_lazy_with(cfg.database.connection()); // PgConnectOptions
+
+        // in the book, `PgPool` is changed to `PgPoolOptions` during refactor without
+        // really explaining why
+        // let pool = PgPoolOptions::new().connect_lazy_with(cfg.database.connection());
+        let pool = get_connection_pool(&cfg.database);
+
+        let sender = cfg.email_client.sender().unwrap();
+        let timeout = cfg.email_client.timeout();
+        let email_client = EmailClient::new(
+            cfg.email_client.base_url,
+            sender,
+            cfg.email_client.authorization_token,
+            timeout,
+        );
+
+        let server = run(listener, pool, email_client)?;
+
+        Ok(Self { port, server })
+    }
+
+    pub fn get_port(&self) -> u16 { self.port }
+
+    /// Because this consumes `self`, this should be the final function call (or
+    /// passed to `tokio::spawn`)
+    pub async fn run_until_stopped(self) -> Result<(), std::io::Error> { self.server.await }
+}
+
+pub fn get_connection_pool(db_cfg: &DatabaseSettings) -> PgPool {
+    PgPoolOptions::new().connect_lazy_with(db_cfg.connection())
+}
+
 /// The server is not responsible for binding to an address, it only listens to
 /// an already bound address.
 ///
-/// API endpoints:
+/// Contains all API endpoints:
 /// `/health_check` (GET)
+/// `/subscriptions` (POST)
 pub fn run(
     // address: &str, // fixed port
     listener: TcpListener,

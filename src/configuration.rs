@@ -15,15 +15,17 @@ use crate::domain::SubscriberEmail;
 
 /// Global configuration, loaded from configuration.yaml. See
 /// `get_configuration`.
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct Settings {
+    /// Database configuration
     pub database: DatabaseSettings,
+    /// Server configuration
     pub application: ApplicationSettings,
     pub email_client: EmailClientSettings,
 }
 
 /// Server configuration
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct ApplicationSettings {
     /// Should be localhost on dev machine, 0.0.0.0 on prod
     pub host: String,
@@ -34,7 +36,7 @@ pub struct ApplicationSettings {
 }
 
 /// Database configuration
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct DatabaseSettings {
     pub username: String,
     pub password: Secret<String>,
@@ -53,7 +55,7 @@ pub struct DatabaseSettings {
     pub require_ssl: bool,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct EmailClientSettings {
     pub base_url: String,
     pub sender_email: String,
@@ -103,6 +105,7 @@ impl DatabaseSettings {
 } //}}}
 
 impl EmailClientSettings {
+    /// Fails if `sender_email` cannot be parsed
     pub fn sender(&self) -> Result<SubscriberEmail, String> {
         SubscriberEmail::parse(self.sender_email.clone())
     }

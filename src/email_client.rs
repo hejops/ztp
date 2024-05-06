@@ -41,7 +41,7 @@ struct SendEmailRequest<'a> {
 
 impl EmailClient {
     /// `timeout` is not exposed at all, so it must be set via configuration. It
-    /// is only overridden for tests.
+    /// is only overridden for tests (to use a small value).
     pub fn new(
         base_url: String,
         sender: SubscriberEmail,
@@ -117,7 +117,6 @@ mod tests {
     use fake::Faker;
     use secrecy::Secret;
     use serde_json::Value;
-    use tokio::time::timeout;
     use wiremock::matchers::any;
     use wiremock::matchers::header;
     use wiremock::matchers::header_exists;

@@ -1,9 +1,5 @@
-use std::net::TcpListener;
-
-use sqlx::PgPool;
 use zero_to_prod::configuration::get_configuration;
-use zero_to_prod::email_client::EmailClient;
-use zero_to_prod::startup::run;
+use zero_to_prod::startup::Application;
 use zero_to_prod::telemetry::get_subscriber;
 use zero_to_prod::telemetry::init_subscriber;
 
@@ -11,6 +7,7 @@ use zero_to_prod::telemetry::init_subscriber;
 // "unless polled, there is no guarantee that [futures] will execute to
 // completion"
 
+/// Initialise telemetry, load config, and start the server
 #[tokio::main] // requires tokio features: macros, rt-multi-thread
 async fn main() -> Result<(), std::io::Error> {
     // RUST_LOG default is "error": https://docs.rs/env_logger/latest/env_logger/#enabling-logging
@@ -43,34 +40,10 @@ async fn main() -> Result<(), std::io::Error> {
     // let addr = "127.0.0.1:0"; // randomised port
     let cfg = get_configuration().unwrap();
 
-    // // hardcoded host (localhost), fixed port (8000)
-    // let addr = format!("127.0.0.1:{}", cfg.application.port);
-
-    // env-dependent host
-    let addr = format!("{}:{}", cfg.application.host, cfg.application.port);
-    let listener = TcpListener::bind(addr)?;
-
-    let pool = PgPool::
-        // connect(cfg.database.connection_string().expose_secret()).await
-        // only connect when the pool is used for the first time (this is not async). this allows
-        // db-free requests (e.g. health_check) to avoid init'ing the db. however, attempting to
-        // init the db when it is not yet configured (e.g. in docker) will cause HTTP
-        // 500 to be returned
-    //     connect_lazy(cfg.database.connection().expose_secret()) // &str
-    // .expect("postgres must be running; run scripts/init_db.sh");
-    connect_lazy_with(cfg.database.connection()); // PgConnectOptions
-
-    let sender = cfg.email_client.sender().unwrap();
-    let timeout = cfg.email_client.timeout();
-    let email_client = EmailClient::new(
-        cfg.email_client.base_url,
-        sender,
-        cfg.email_client.authorization_token,
-        timeout,
-    );
-
-    // note: our `run` function is now wrapped by tokio (so LSP can't reach it)
-    run(listener, pool, email_client)?.await
+    let server = Application::build(cfg).await?;
+    server.run_until_stopped().await?;
+    // note: the last function call is wrapped by tokio (so LSP can't reach it)
+    Ok(())
 }
 
 // /// when expanded with `cargo expand`
