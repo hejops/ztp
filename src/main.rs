@@ -61,7 +61,13 @@ async fn main() -> Result<(), std::io::Error> {
     connect_lazy_with(cfg.database.connection()); // PgConnectOptions
 
     let sender = cfg.email_client.sender().unwrap();
-    let email_client = EmailClient::new(cfg.email_client.base_url, sender);
+    let timeout = cfg.email_client.timeout();
+    let email_client = EmailClient::new(
+        cfg.email_client.base_url,
+        sender,
+        cfg.email_client.authorization_token,
+        timeout,
+    );
 
     // note: our `run` function is now wrapped by tokio (so LSP can't reach it)
     run(listener, pool, email_client)?.await

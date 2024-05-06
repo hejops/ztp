@@ -1,6 +1,8 @@
 use validator::ValidateEmail;
 
 #[derive(Debug)]
+/// This struct exists only for email parsing and can be used for both senders
+/// and recipients.
 pub struct SubscriberEmail(String);
 
 impl SubscriberEmail {

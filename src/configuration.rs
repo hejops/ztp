@@ -1,6 +1,7 @@
 use std::env;
 use std::env::current_dir;
 use std::fmt::Display;
+use std::time::Duration;
 
 use config::Config;
 use config::ConfigError;
@@ -56,6 +57,8 @@ pub struct DatabaseSettings {
 pub struct EmailClientSettings {
     pub base_url: String,
     pub sender_email: String,
+    pub authorization_token: Secret<String>,
+    pub timeout_ms: u64,
 }
 
 impl DatabaseSettings {
@@ -103,6 +106,8 @@ impl EmailClientSettings {
     pub fn sender(&self) -> Result<SubscriberEmail, String> {
         SubscriberEmail::parse(self.sender_email.clone())
     }
+
+    pub fn timeout(&self) -> Duration { Duration::from_millis(self.timeout_ms) }
 }
 
 pub enum Environment {

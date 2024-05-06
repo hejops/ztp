@@ -5,6 +5,7 @@ use sqlx::Connection;
 use sqlx::Executor;
 use sqlx::PgConnection;
 use sqlx::PgPool;
+use tokio::time::timeout;
 use uuid::Uuid;
 use zero_to_prod::configuration::get_configuration;
 use zero_to_prod::configuration::DatabaseSettings;
@@ -155,7 +156,13 @@ async fn spawn_app() -> TestApp {
     let pool = configure_database(&cfg.database).await;
 
     let sender = cfg.email_client.sender().unwrap();
-    let email_client = EmailClient::new(cfg.email_client.base_url, sender);
+    let timeout = cfg.email_client.timeout();
+    let email_client = EmailClient::new(
+        cfg.email_client.base_url,
+        sender,
+        cfg.email_client.authorization_token,
+        timeout,
+    );
 
     let server = startup::run(listener, pool.clone(), email_client).expect("bind address");
     tokio::spawn(server);
