@@ -2,6 +2,7 @@ use std::net::TcpListener;
 
 use sqlx::PgPool;
 use zero_to_prod::configuration::get_configuration;
+use zero_to_prod::email_client::EmailClient;
 use zero_to_prod::startup::run;
 use zero_to_prod::telemetry::get_subscriber;
 use zero_to_prod::telemetry::init_subscriber;
@@ -59,8 +60,11 @@ async fn main() -> Result<(), std::io::Error> {
     // .expect("postgres must be running; run scripts/init_db.sh");
     connect_lazy_with(cfg.database.connection()); // PgConnectOptions
 
+    let sender = cfg.email_client.sender().unwrap();
+    let email_client = EmailClient::new(cfg.email_client.base_url, sender);
+
     // note: our `run` function is now wrapped by tokio (so LSP can't reach it)
-    run(listener, pool)?.await
+    run(listener, pool, email_client)?.await
 }
 
 // /// when expanded with `cargo expand`

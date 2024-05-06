@@ -8,6 +8,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 use zero_to_prod::configuration::get_configuration;
 use zero_to_prod::configuration::DatabaseSettings;
+use zero_to_prod::email_client::EmailClient;
 use zero_to_prod::startup;
 use zero_to_prod::telemetry::get_subscriber;
 use zero_to_prod::telemetry::init_subscriber;
@@ -153,7 +154,10 @@ async fn spawn_app() -> TestApp {
     cfg.database.database_name = Uuid::new_v4().to_string();
     let pool = configure_database(&cfg.database).await;
 
-    let server = startup::run(listener, pool.clone()).expect("bind address");
+    let sender = cfg.email_client.sender().unwrap();
+    let email_client = EmailClient::new(cfg.email_client.base_url, sender);
+
+    let server = startup::run(listener, pool.clone(), email_client).expect("bind address");
     tokio::spawn(server);
 
     TestApp { addr, pool }

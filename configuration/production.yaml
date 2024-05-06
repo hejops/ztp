@@ -3,3 +3,10 @@ application:
   host: "0.0.0.0"
 database:
   require_ssl: true
+
+# https://github.com/search?type=code&q=base_url+sender_email+mailchimp+language%3Ayaml
+email_client:
+  # base_url: "https://api.postmarkapp.com"
+  # sender_email: "something@gmail.com"
+  base_url: https://us22.api.mailchimp.com/3.0/
+  sender_email: "foo@gmail.com"

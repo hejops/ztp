@@ -7,6 +7,7 @@ use actix_web::HttpServer;
 use sqlx::PgPool;
 use tracing_actix_web::TracingLogger;
 
+use crate::email_client::EmailClient;
 use crate::routes::health_check;
 use crate::routes::subscribe;
 
@@ -19,6 +20,7 @@ pub fn run(
     // address: &str, // fixed port
     listener: TcpListener,
     pool: PgPool,
+    email_client: EmailClient,
 ) -> Result<Server, std::io::Error> {
     // email newsletter (e.g. MailChimp)
 
@@ -47,6 +49,7 @@ pub fn run(
     // `Data` is externally an `Arc` (for sharing/cloning), internally a `HashMap`
     // (for wrapping arbitrary types)
     let pool = web::Data::new(pool);
+    let email_client = web::Data::new(email_client);
 
     // note the closure; "`actix-web` will spin up a worker process for each
     // available core on your machine. Each worker runs its own copy of the
@@ -71,8 +74,11 @@ pub fn run(
             .route("/health_check", web::get().to(health_check))
             // remember, the guard must match the client's request type
             .route("/subscriptions", web::post().to(subscribe))
-            // global state
+            // global state, e.g. db connection, http client(s)
+            // args passed must implement either `Clone` or `web::Data`. the latter allows -all-
+            // associated fields of the struct to be shared across the app
             .app_data(pool.clone())
+            .app_data(email_client.clone())
 
         // .route("/", web::get().to(greet))
         //

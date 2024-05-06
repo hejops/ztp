@@ -10,12 +10,15 @@ use serde::Deserialize;
 use serde_aux::field_attributes::deserialize_number_from_string;
 use sqlx::postgres::PgConnectOptions;
 
+use crate::domain::SubscriberEmail;
+
 /// Global configuration, loaded from configuration.yaml. See
 /// `get_configuration`.
 #[derive(Deserialize)]
 pub struct Settings {
     pub database: DatabaseSettings,
     pub application: ApplicationSettings,
+    pub email_client: EmailClientSettings,
 }
 
 /// Server configuration
@@ -49,7 +52,14 @@ pub struct DatabaseSettings {
     pub require_ssl: bool,
 }
 
+#[derive(Deserialize)]
+pub struct EmailClientSettings {
+    pub base_url: String,
+    pub sender_email: String,
+}
+
 impl DatabaseSettings {
+    //{{{
     /// Return connection to a named database (declared in config file). The db
     /// password is concealed.
     pub fn connection(&self) -> PgConnectOptions {
@@ -86,6 +96,12 @@ impl DatabaseSettings {
                 true => sqlx::postgres::PgSslMode::Require,
                 false => sqlx::postgres::PgSslMode::Prefer,
             })
+    }
+} //}}}
+
+impl EmailClientSettings {
+    pub fn sender(&self) -> Result<SubscriberEmail, String> {
+        SubscriberEmail::parse(self.sender_email.clone())
     }
 }
 

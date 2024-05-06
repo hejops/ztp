@@ -15,8 +15,9 @@ pub struct FormData {
     email: String,
 }
 
-// personally i would've placed this in `new_subscriber`, but this requires
-// `FormData`'s fields to be `pub`
+// personally i would've placed this in `new_subscriber` (since i like to keep
+// structs and impls together), but this requires `FormData`'s fields to be
+// `pub`
 impl TryFrom<FormData> for NewSubscriber {
     type Error = String;
     fn try_from(value: FormData) -> Result<Self, Self::Error> {
@@ -44,15 +45,8 @@ impl TryFrom<FormData> for NewSubscriber {
 // into a structured representation (i.e. a struct), which can then be passed
 // around with confidence in its correctness, due to compile-time checks.
 
-// /// Basic checks on user-submitted `name`, namely: enforce maximum length,
-// /// reject some problematic characters
-// pub fn is_valid_name(name: &str) -> bool {
-//     let empty = name.trim().is_empty();
-//     let too_long = name.graphemes(true).count() > 256;
-//     let bad_chars: HashSet<char> = r#"/()"<>\{}"#.chars().collect();
-//     let bad = name.chars().any(|c| bad_chars.contains(&c));
-//     !empty && !too_long && !bad
-// }
+// after email validation, it is still necessary to confirm user consent with a
+// confirmation email
 
 /// `POST`. `form` is raw HTML, which is ultimately deserialized into a SQL
 /// `INSERT` query.
