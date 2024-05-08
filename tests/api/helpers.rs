@@ -4,6 +4,7 @@ use sqlx::Executor;
 use sqlx::PgConnection;
 use sqlx::PgPool;
 use uuid::Uuid;
+use wiremock::MockServer;
 use zero_to_prod::configuration::get_configuration;
 use zero_to_prod::configuration::DatabaseSettings;
 use zero_to_prod::startup::get_connection_pool;
@@ -48,10 +49,14 @@ static TRACING: Lazy<()> = Lazy::new(|| {
 
 pub struct TestApp {
     pub addr: String,
+    pub port: u16,
     pub pool: PgPool,
+    pub email_server: MockServer,
 }
 
 impl TestApp {
+    /// Convenience method for making a `/subscriptions` `POST` request, which
+    /// partially mimics `subscriptions::subscribe`; it does -not- send email
     pub async fn post_subscriptions(
         &self,
         body: String,
@@ -87,7 +92,10 @@ async fn configure_database(cfg: &DatabaseSettings) -> PgPool {
     // perform the migration(s) and create the table(s). `migrate!` path defaults to
     // "./migrations", where . is project root
     let pool = PgPool::connect_with(cfg.connection()).await.unwrap();
-    sqlx::migrate!().run(&pool).await.unwrap();
+    sqlx::migrate!()
+        .run(&pool)
+        .await
+        .expect("failed to migrate");
     pool
 }
 
@@ -105,6 +113,9 @@ pub async fn spawn_app() -> TestApp {
     // init the tracing subscriber once only
     Lazy::force(&TRACING);
 
+    // simulate mailchimp api
+    let email_server = MockServer::start().await;
+
     let cfg = {
         // in addition to the address, the db connection must also be made known. db
         // name is randomised to allow a new db to be spawned per test
@@ -121,6 +132,8 @@ pub async fn spawn_app() -> TestApp {
         // port 0 is reserved by the OS; the server will be spawned on an address with a
         // random available port. this address/port must then be made known to clients
         rand_cfg.application.port = 0;
+
+        rand_cfg.email_client.base_url = email_server.uri();
 
         rand_cfg
     };
@@ -143,10 +156,20 @@ pub async fn spawn_app() -> TestApp {
 
     // let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     // let port = listener.local_addr().unwrap().port();
-    let addr = format!("http://127.0.0.1:{}", app.get_port());
+    let addr = format!(
+        // "http://127.0.0.1:{}",
+        "http://localhost:{}",
+        app.get_port()
+    );
+    let port = app.get_port(); // for constructing confirmation urls
 
     let pool = get_connection_pool(&cfg.database); // can be done before or after spawn, apparently
     tokio::spawn(app.run_until_stopped());
 
-    TestApp { addr, pool }
+    TestApp {
+        addr,
+        port,
+        pool,
+        email_server,
+    }
 }

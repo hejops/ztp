@@ -2,6 +2,7 @@ use std::net::TcpListener;
 
 use actix_web::dev::Server;
 use actix_web::web;
+use actix_web::web::Data;
 use actix_web::App;
 use actix_web::HttpServer;
 use sqlx::postgres::PgPoolOptions;
@@ -11,6 +12,7 @@ use tracing_actix_web::TracingLogger;
 use crate::configuration::DatabaseSettings;
 use crate::configuration::Settings;
 use crate::email_client::EmailClient;
+use crate::routes::confirm;
 use crate::routes::health_check;
 use crate::routes::subscribe;
 
@@ -63,7 +65,7 @@ impl Application {
             timeout,
         );
 
-        let server = run(listener, pool, email_client)?;
+        let server = run(listener, pool, email_client, cfg.application.base_url)?;
 
         Ok(Self { port, server })
     }
@@ -79,6 +81,10 @@ pub fn get_connection_pool(db_cfg: &DatabaseSettings) -> PgPool {
     PgPoolOptions::new().connect_lazy_with(db_cfg.connection())
 }
 
+/// Wrapper for top-level application base_url (because raw `String` cannot be
+/// passed around by `Data` (?))
+pub struct AppBaseUrl(pub String);
+
 /// The server is not responsible for binding to an address, it only listens to
 /// an already bound address.
 ///
@@ -90,6 +96,7 @@ pub fn run(
     listener: TcpListener,
     pool: PgPool,
     email_client: EmailClient,
+    base_url: String,
 ) -> Result<Server, std::io::Error> {
     // email newsletter (e.g. MailChimp)
 
@@ -143,11 +150,14 @@ pub fn run(
             .route("/health_check", web::get().to(health_check))
             // remember, the guard must match the client's request type
             .route("/subscriptions", web::post().to(subscribe))
+            .route("/subscriptions/confirm", web::get().to(confirm))
             // global state, e.g. db connection, http client(s)
             // args passed must implement either `Clone` or `web::Data`. the latter allows -all-
             // associated fields of the struct to be shared across the app
             .app_data(pool.clone())
             .app_data(email_client.clone())
+            // .app_data(base_url.clone())
+            .app_data(Data::new(AppBaseUrl(base_url.clone())))
 
         // .route("/", web::get().to(greet))
         //

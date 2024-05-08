@@ -2,6 +2,7 @@
 mod health_check;
 mod helpers;
 mod subscriptions;
+mod subscriptions_confirm;
 
 // 'no external crate' -- add to Cargo.toml:
 // [lib]

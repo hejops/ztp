@@ -8,6 +8,8 @@ use uuid::Uuid;
 use crate::domain::NewSubscriber;
 use crate::domain::SubscriberEmail;
 use crate::domain::SubscriberName;
+use crate::email_client::EmailClient;
+use crate::startup::AppBaseUrl;
 
 #[derive(Deserialize)]
 pub struct FormData {
@@ -48,8 +50,38 @@ impl TryFrom<FormData> for NewSubscriber {
 // after email validation, it is still necessary to confirm user consent with a
 // confirmation email
 
+/// Wrapper for `EmailClient.send_email`. Probably should be declared here and
+/// left private (rather than a public `EmailClient.send_confirmation_email`
+/// method).
+#[tracing::instrument(
+    name = "Sending confirmation email to new subscriber",
+    skip(email_client, new_sub, base_url)
+)]
+async fn send_confirmation_email(
+    email_client: &EmailClient,
+    new_sub: NewSubscriber,
+    base_url: &str,
+) -> Result<(), reqwest::Error> {
+    let confirm_link = format!("{base_url}/subscriptions/confirm?subscription_token=foobar");
+    println!("{}", confirm_link);
+    email_client
+        .send_email(
+            new_sub.email,
+            "foo",
+            &format!("confirm at {confirm_link}").to_owned(),
+            &format!("confirm at {confirm_link}").to_owned(),
+        )
+        .await
+}
+
 /// `POST`. `form` is raw HTML, which is ultimately deserialized into a SQL
-/// `INSERT` query.
+/// `INSERT` query. Sends a confirmation email to the email address passed by
+/// the user.
+///
+/// Success requires:
+///     1. user input parsed
+///     2. user added to db
+///     3. email sent to user email
 ///
 /// # Request example
 ///
@@ -64,50 +96,21 @@ impl TryFrom<FormData> for NewSubscriber {
 /// `FormData` struct (via `Form` and `serde`), invalid data causes the function
 /// to return early, returning an `Error` (400) automatically. Otherwise, the
 /// successfully parsed request is added to the db.
-///
-/// (Note: if the function takes no arguments, it will always return 200,
-/// even on invalid data.)
+// (Note: if the function takes no arguments, it will always return 200,
+// even on invalid data.)
 ///
 /// `PgPool` is used over `PgConnection` as the former has has `Mutex`
 /// 'built-in'.
 // "when you run a query against a `&PgPool`, `sqlx` will borrow a `PgConnection` from the pool and
 // use it to execute the query; if no connection is available, it will create a new one or wait
 // until one frees up."
-///
-// # Request parsing
-//
-// How `Form` -> `Result` extraction works: `FromRequest` trait provides
-// the `from_request` method, which takes `HttpRequest` + `Payload`,
-// and implicitly 'wraps' the return value as `Result<Self, Self::Error>`
-// (in practice, this usually means (200, 400)).
-//
-// Under the hood, `from_request` uses `UrlEncoded::new`, and
-// `serde_urlencoded::from_bytes`.
-//
-// # Deserialization, serde
-//
-// `serde` defines a set of data models, agnostic to specific data formats
-// like JSON.
-//
-// The `Serialize` trait (`serialize` method) converts a single type `T`
-// (e.g. `Vec`) into `Result`:
-//
-// ```rust,ignore
-//     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-// ```
-//
-// The `Serializer` trait (`serialize_X` methods) converts any and all
-// arbitrary Rust types `T` into `Result`.
-//
-// Monomorphisation is a zero-cost abstraction (no runtime cost). Proc
-// macros (`#[derive(Deserialize)]`) make parsing convenient.
 #[tracing::instrument(
     // to separate instrumentation (tracing) from execution (i.e. the actual work, in this
     // case`sqlx::query`), the entire function is wrapped in a span. note that the return value is
     // wrapped by `tracing`
     name = "Adding new subscriber", // defaults to fn name
     // don't log passed args
-    skip(form, pool),
+    skip(form, pool, email_client, base_url),
     fields(
         // same syntax as info_span
         // should not be used in conjunction with TracingLogger, as TracingLogger generates its own ids
@@ -118,7 +121,10 @@ impl TryFrom<FormData> for NewSubscriber {
 )]
 pub async fn subscribe(
     form: web::Form<FormData>,
+    // all subsequent args are inherited via App.app_data; thus arg types must be unique
     pool: web::Data<PgPool>,
+    email_client: web::Data<EmailClient>,
+    base_url: web::Data<AppBaseUrl>,
 ) -> HttpResponse {
     // // with `log` feature, tracing events are redirected to `log`
     // // automatically
@@ -160,6 +166,31 @@ pub async fn subscribe(
     // of `::`
     // let new_sub = match NewSubscriber::try_from(form.0) {
     let new_sub = match form.0.try_into() {
+        // # Request parsing
+        //
+        // How `Form` -> `Result` extraction works: `FromRequest` trait provides the `from_request`
+        // method, which takes `HttpRequest` + `Payload`, and implicitly 'wraps' the return value
+        // as `Result<Self, Self::Error>` (in practice, this usually means (200, 400)).
+        //
+        // Under the hood, `from_request` uses `UrlEncoded::new`, and
+        // `serde_urlencoded::from_bytes`.
+        //
+        // # Deserialization, serde
+        //
+        // `serde` defines a set of data models, agnostic to specific data formats like JSON.
+        //
+        // The `Serialize` trait (`serialize` method) converts a single type `T` (e.g. `Vec`) into
+        // `Result`:
+        //
+        // ```rust,ignore
+        //     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        // ```
+        //
+        // The `Serializer` trait (`serialize_X` methods) converts any and all arbitrary Rust types
+        // `T` into `Result`.
+        //
+        // Monomorphisation is a zero-cost abstraction (no runtime cost). Proc macros
+        // (`#[derive(Deserialize)]`) make parsing convenient.
         Ok(n) => n,
         // unfortunately we can't do ?-style early return/method chaining with HttpResponse
         Err(_) => return HttpResponse::BadRequest().finish(),
@@ -167,6 +198,11 @@ pub async fn subscribe(
 
     // coerce sqlx::Error into http 500
     match insert_subscriber(&new_sub, &pool).await {
+        Ok(_) => HttpResponse::Ok().finish(),
+        Err(_) => return HttpResponse::InternalServerError().finish(),
+    };
+
+    match send_confirmation_email(&email_client, new_sub, &base_url.0).await {
         Ok(_) => HttpResponse::Ok().finish(),
         Err(_) => HttpResponse::InternalServerError().finish(),
     }
@@ -236,7 +272,7 @@ async fn insert_subscriber(
         // ",
         "
     INSERT INTO subscriptions (id, email, name, subscribed_at, status)
-    VALUES ($1, $2, $3, $4, 'confirmed')
+    VALUES ($1, $2, $3, $4, 'pending_confirmation')
 ",
         Uuid::new_v4(),
         new_sub.email.as_ref(),

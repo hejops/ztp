@@ -33,6 +33,10 @@ pub struct ApplicationSettings {
     /// Port for the server, currently hardcoded to 8000
     #[serde(deserialize_with = "deserialize_number_from_string")]
     pub port: u16,
+
+    /// Either `localhost`, or whatever is supplied by digitalocean (via env
+    /// variable)
+    pub base_url: String,
 }
 
 /// Database configuration

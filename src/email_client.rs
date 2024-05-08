@@ -15,7 +15,8 @@ use crate::domain::SubscriberEmail;
 pub struct EmailClient {
     /// The client that actually communicates with the REST API
     http_client: Client,
-    /// This will depend on email provider
+    /// In prod, this will depend on email provider. Locally, this is just
+    /// `localhost`.
     base_url: String,
     sender: SubscriberEmail,
     /// API key from the email provider
@@ -61,6 +62,14 @@ impl EmailClient {
         }
     }
 
+    /// Use the API provider to send an email. The path `/email` is used by
+    /// Postmark:
+    ///     https://postmarkapp.com/developer/user-guide/send-email-with-api#send-a-single-email
+    ///
+    /// Fails if ...
+    ///
+    /// I don't fully understand how this works, but it seems to work fine for
+    /// localhost+mock tests.
     pub async fn send_email(
         &self,
         recipient: SubscriberEmail,
@@ -70,15 +79,15 @@ impl EmailClient {
     ) -> Result<(), reqwest::Error> {
         // SMTP and REST can be used to send email; REST is usually easier to set up,
 
-        // derived from Postmark docs: https://postmarkapp.com/developer/user-guide/send-email-with-api#send-a-single-email
         // mailchimp doesn't seem to have an exact equivalent, so we roll with it for
         // now until we inevitably run into problems
         // https://mailchimp.com/developer/marketing/api/campaigns/
+        //
         // "Send test email"
         // POST /campaigns/{campaign_id}/actions/test
         let url = format!("{}/email", self.base_url);
         let url = Url::parse(&url).unwrap();
-        println!("{:?}", url);
+        println!("{:?}", url.as_str());
 
         let body = SendEmailRequest {
             from: self.sender.as_ref(),
@@ -90,8 +99,7 @@ impl EmailClient {
 
         // `.json` accepts structs (which implement `Serialize`), and also sets the
         // appropriate `Content-Type` header; `.body` doesn't
-        let builder = self
-            .http_client
+        self.http_client
             .post(url)
             // on Postmark this is "X-Postmark-Server-Token"
             // https://mailchimp.com/developer/transactional/guides/send-first-email/#send-your-first-email

@@ -41,6 +41,19 @@ mod tests {
     use claims::assert_err;
     use claims::assert_ok;
 
+    // by default, calling assert!(foo.is_ok()) does not reveal the `Err` in cargo
+    // test:
+    //
+    // ---- dummy_fail stdout ----
+    // thread 'dummy_fail' panicked at tests/health_check.rs:236:5:
+    // assertion failed: result.is_ok()
+    //
+    // with claims::assert_ok(result):
+    //
+    // ---- dummy_fail stdout ----
+    // thread 'dummy_fail' panicked at tests/health_check.rs:244:5:
+    // assertion failed, expected Ok(..), got Err("The app crashed due to an IO
+    // error")
     use crate::domain::SubscriberName;
 
     #[test]
