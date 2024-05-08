@@ -4,16 +4,9 @@ use crate::helpers::spawn_app;
 #[tokio::test]
 async fn subscribe_ok() {
     let app = spawn_app().await;
-    let client = reqwest::Client::new();
-
     let body = "name=john&email=foo%40bar.com";
-    let resp = client
-        .post(format!("{}/subscriptions", app.addr))
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(body)
-        .send()
-        .await
-        .expect("execute request");
+    let resp = app.post_subscriptions(body.to_owned()).await;
+
     assert_eq!(resp.status().as_u16(), 200);
     assert!(resp.status().is_success());
     // assert_eq!(resp.content_length().unwrap(), 0); // empty body
@@ -69,7 +62,6 @@ async fn subscribe_ok() {
 #[tokio::test]
 async fn subscribe_invalid() {
     let app = spawn_app().await;
-    let client = reqwest::Client::new();
 
     // for parametrised testing, use `rstest`
     for (body, msg) in [
@@ -83,13 +75,7 @@ async fn subscribe_invalid() {
         ("name=john&email=", "empty email"),
         ("name=john&email=not-an-email", "invalid email"),
     ] {
-        let resp = client
-            .post(format!("{}/subscriptions", app.addr))
-            .header("Content-Type", "application/x-www-form-urlencoded")
-            .body(body)
-            .send()
-            .await
-            .expect("execute request");
+        let resp = app.post_subscriptions(body.to_owned()).await;
         assert_eq!(resp.status().as_u16(), 400, "{msg}");
     }
 }

@@ -51,6 +51,23 @@ pub struct TestApp {
     pub pool: PgPool,
 }
 
+impl TestApp {
+    pub async fn post_subscriptions(
+        &self,
+        body: String,
+    ) -> reqwest::Response {
+        let client = reqwest::Client::new();
+
+        client
+            .post(format!("{}/subscriptions", self.addr))
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .body(body)
+            .send()
+            .await
+            .expect("execute request")
+    }
+}
+
 /// Read `DatabaseSettings` and create a db with a randomised name (but with the
 /// same migrations/tables, specified in the `migrations` directory). The
 /// connection to this db can then be used to run a single test.

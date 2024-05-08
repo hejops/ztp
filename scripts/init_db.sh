@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# set -x
 set -euo pipefail
+
+# pass a non-null value for SKIP_DOCKER to update db schema without
+# (re)starting docker
 
 # https://wiki.archlinux.org/title/Docker
 # https://docs.docker.com/config/daemon/start/

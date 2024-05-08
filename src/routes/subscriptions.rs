@@ -191,7 +191,7 @@ pub async fn subscribe(
     // skip(form, pool)
     skip(new_sub, pool)
 )]
-pub async fn insert_subscriber(
+async fn insert_subscriber(
     // form: &FormData,
     new_sub: &NewSubscriber,
     pool: &PgPool,
@@ -202,10 +202,41 @@ pub async fn insert_subscriber(
     // data theft, phishing. it is not necessary to deal with all of these at
     // the outset, but it is good to keep them in mind
 
+    // on db schema updates:
+    //
+    // we now need to add a new key to the db schema (status (str/enum)), and a new
+    // table for subscription_token (uuid). this is a breaking change that must
+    // be implemented with zero downtime.
+    //
+    // switching off instances of the old version and starting instances of the new
+    // version will incur downtime.
+    //
+    // load balancers allow different versions of a server to coexist. this enables:
+    // horizontal scaling, self-healing, rolling updates.
+    //
+    // AA -> AAB -> ABB -> BBB
+    //
+    // the server itself should be stateless; all state should be stored in the db,
+    // which is the same across all server instances. thus, when the server api
+    // changes, the db needs to support both the old and new versions:
+    //
+    // "if we want to evolve the database schema we cannot change the application
+    // behaviour at the same time."
+    //
+    // new key: first add a migration to add the key as optional (NULL), preferably
+    // with default value, then a separate migration to backfill and make the key
+    // mandatory (NOT NULL)
+    //
+    // new table: just add the new migration
+
     sqlx::query!(
+        //         "
+        //     INSERT INTO subscriptions (id, email, name, subscribed_at)
+        //     VALUES ($1, $2, $3, $4)
+        // ",
         "
-    INSERT INTO subscriptions (id, email, name, subscribed_at)
-    VALUES ($1, $2, $3, $4)
+    INSERT INTO subscriptions (id, email, name, subscribed_at, status)
+    VALUES ($1, $2, $3, $4, 'confirmed')
 ",
         Uuid::new_v4(),
         new_sub.email.as_ref(),
