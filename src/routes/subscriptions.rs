@@ -1,6 +1,9 @@
 use actix_web::web;
 use actix_web::HttpResponse;
 use chrono::Utc;
+use rand::distributions::Alphanumeric;
+use rand::thread_rng;
+use rand::Rng;
 use serde::Deserialize;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -55,15 +58,16 @@ impl TryFrom<FormData> for NewSubscriber {
 /// method).
 #[tracing::instrument(
     name = "Sending confirmation email to new subscriber",
-    skip(email_client, new_sub, base_url)
+    skip(email_client, new_sub, base_url, token)
 )]
 async fn send_confirmation_email(
     email_client: &EmailClient,
     new_sub: NewSubscriber,
     base_url: &str,
+    token: &str,
 ) -> Result<(), reqwest::Error> {
-    let confirm_link = format!("{base_url}/subscriptions/confirm?subscription_token=foobar");
-    println!("{}", confirm_link);
+    let confirm_link = format!("{base_url}/subscriptions/confirm?subscription_token={token}");
+    // println!("{}", confirm_link);
     email_client
         .send_email(
             new_sub.email,
@@ -96,6 +100,8 @@ async fn send_confirmation_email(
 /// `FormData` struct (via `Form` and `serde`), invalid data causes the function
 /// to return early, returning an `Error` (400) automatically. Otherwise, the
 /// successfully parsed request is added to the db.
+///
+/// All other args are implicity passed via `.app_data`
 // (Note: if the function takes no arguments, it will always return 200,
 // even on invalid data.)
 ///
@@ -197,18 +203,55 @@ pub async fn subscribe(
     };
 
     // coerce sqlx::Error into http 500
-    match insert_subscriber(&new_sub, &pool).await {
-        Ok(_) => HttpResponse::Ok().finish(),
+    let id = match insert_subscriber(&new_sub, &pool).await {
+        // Ok(_) => (),
+        Ok(id) => id,
         Err(_) => return HttpResponse::InternalServerError().finish(),
     };
 
-    match send_confirmation_email(&email_client, new_sub, &base_url.0).await {
+    let token: String = {
+        let mut rng = thread_rng();
+        (0..25).map(|_| rng.sample(Alphanumeric) as char).collect()
+    };
+
+    match store_token(&pool, id, &token).await {
+        Ok(_) => (),
+        Err(_) => return HttpResponse::InternalServerError().finish(),
+    };
+
+    match send_confirmation_email(&email_client, new_sub, &base_url.0, &token).await {
         Ok(_) => HttpResponse::Ok().finish(),
         Err(_) => HttpResponse::InternalServerError().finish(),
     }
 }
 
-/// Only db logic is performed here; this is independent of web framework.
+#[tracing::instrument(name = "INSERTing new subscriber token into db", skip(pool, token))]
+async fn store_token(
+    pool: &PgPool,
+    id: Uuid,
+    token: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        "
+    INSERT INTO subscription_tokens (subscriber_id, subscription_token)
+    VALUES ($1, $2)
+",
+        id,
+        token,
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| {
+        tracing::error!("bad query: {e:?}");
+        e
+    })?;
+    Ok(())
+}
+
+/// Assign unique identifier to new user, and return this for subsequent
+/// confirmation (see `subscriptions/confirm`).
+///
+/// Only db logic is performed here; i.e. this is independent of web framework.
 ///
 /// `sqlx::query!` can validate fields at compile time, but this requires
 /// - a `DATABASE_URL` env var declared (typically in `./.env`), and a running
@@ -231,7 +274,7 @@ async fn insert_subscriber(
     // form: &FormData,
     new_sub: &NewSubscriber,
     pool: &PgPool,
-) -> Result<(), sqlx::Error> {
+) -> Result<Uuid, sqlx::Error> {
     // let query_span = tracing::info_span!("INSERTing new subscriber into db");
 
     // general threats to protect against include: SQL injection, denial of service,
@@ -265,6 +308,8 @@ async fn insert_subscriber(
     //
     // new table: just add the new migration
 
+    let id = Uuid::new_v4();
+
     sqlx::query!(
         //         "
         //     INSERT INTO subscriptions (id, email, name, subscribed_at)
@@ -274,7 +319,7 @@ async fn insert_subscriber(
     INSERT INTO subscriptions (id, email, name, subscribed_at, status)
     VALUES ($1, $2, $3, $4, 'pending_confirmation')
 ",
-        Uuid::new_v4(),
+        id,
         new_sub.email.as_ref(),
         new_sub.name.as_ref(),
         Utc::now(),
@@ -288,5 +333,5 @@ async fn insert_subscriber(
         tracing::error!("bad query: {e:?}");
         e
     })?;
-    Ok(())
+    Ok(id)
 }

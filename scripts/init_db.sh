@@ -18,6 +18,8 @@ set -euo pipefail
 
 # sudo docker run -p 80:80 -e PGADMIN_DEFAULT_EMAIL=user@domain.com -e PGADMIN_DEFAULT_PASSWORD=SuperSecret -d dpage/pgadmin4
 
+# "failed to add the host" error is probably due to kernel upgrade; reboot to fix this
+
 cd "$(realpath "$0" | xargs dirname | xargs dirname)"
 
 if [ ! -x "$(command -v psql)" ]; then

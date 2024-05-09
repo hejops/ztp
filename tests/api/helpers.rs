@@ -1,4 +1,9 @@
+use linkify::Link;
+use linkify::LinkFinder;
+use linkify::LinkKind;
 use once_cell::sync::Lazy;
+use reqwest::Url;
+use serde_json::Value;
 use sqlx::Connection;
 use sqlx::Executor;
 use sqlx::PgConnection;
@@ -54,9 +59,16 @@ pub struct TestApp {
     pub email_server: MockServer,
 }
 
+pub struct ConfirmationLinks {
+    pub text: Url,
+    pub html: Url,
+}
+
 impl TestApp {
-    /// Convenience method for making a `/subscriptions` `POST` request, which
-    /// partially mimics `subscriptions::subscribe`; it does -not- send email
+    /// Convenience method for making a `/subscriptions` `POST` request. While
+    /// meant to mimic a `subscriptions::subscribe` a call, this method does
+    /// -not- send email (necessary for successful result), so tests that use
+    /// this method should simulate that separately (e.g. with `Mock`)
     pub async fn post_subscriptions(
         &self,
         body: String,
@@ -70,6 +82,37 @@ impl TestApp {
             .send()
             .await
             .expect("execute request")
+    }
+
+    pub fn get_confirmation_links(
+        &self,
+        email_req: &wiremock::Request,
+    ) -> ConfirmationLinks {
+        // fn get_first_link(body: &str) -> Url {
+        let get_first_link = |body: &str| {
+            // closure is used to more easily capture self.port (fn would require extra arg)
+            let links: Vec<Link> = LinkFinder::new()
+                .links(body)
+                .filter(|l| *l.kind() == LinkKind::Url)
+                .collect();
+            assert_eq!(links.len(), 1);
+            let link = links[0].as_str().to_owned();
+
+            let mut link = Url::parse(&link).unwrap();
+            assert_eq!(link.host_str().unwrap(), "127.0.0.1");
+
+            // retrieve the randomised port (assigned by OS)
+            link.set_port(Some(self.port)).unwrap();
+            link
+        };
+
+        let body: Value = serde_json::from_slice(&email_req.body).unwrap();
+
+        // this will be `base_url`/subscriptions/confirm?subscription_token=...
+        let text = get_first_link(body["TextBody"].as_str().unwrap());
+        let html = get_first_link(body["HtmlBody"].as_str().unwrap());
+
+        ConfirmationLinks { text, html }
     }
 }
 

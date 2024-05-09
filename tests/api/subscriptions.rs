@@ -1,7 +1,3 @@
-use linkify::Link;
-use linkify::LinkFinder;
-use linkify::LinkKind;
-use serde_json::Value;
 use wiremock::matchers::method;
 use wiremock::matchers::path;
 use wiremock::Mock;
@@ -47,17 +43,17 @@ async fn subscribe_added_to_db() {
 
     app.post_subscriptions(body.to_owned()).await;
 
-    // now we check that the side-effect occurred (subscription added to db).
-    // ideally, this should be done with another separate (GET) endpoint, but if
-    // this endpoint is non-trivial to implement, the check can be done inside
-    // the test ('server-side')
+    // now we check that the side-effect occurred (subscription added to db). in the
+    // absence of a separate (GET) endpoint ('client-side'), the check can be
+    // done inside the test ('server-side')
 
     let added = sqlx::query!("SELECT email, name, status FROM subscriptions")
         .fetch_one(&app.pool)
         .await
         .unwrap();
+
     // initially, this failed because we didn't actually do anything (i.e. INSERT)
-    // with the subscribe request, so we couldn't fetch anything
+    // with the `subscribe` request, so we couldn't fetch anything
     assert_eq!(added.name, "john");
     assert_eq!(added.email, "foo@bar.com");
     // remember to add `status` to the `SELECT` statement!
@@ -65,7 +61,8 @@ async fn subscribe_added_to_db() {
 
     // since email is a UNIQUE field, this test can only pass once (per db
     // instantation)! to avoid this, either restart db (not good), implement
-    // rollbacks (faster), or create a new db with every test (easier)
+    // rollbacks (faster), or create a new db with every test (easier -- handled
+    // by spawn_app)
 
     // PGPASSWORD=password psql --host=localhost --username=postgres
     // --command='SELECT datname FROM pg_catalog.pg_database;'
@@ -105,7 +102,7 @@ async fn subscribe_invalid_request() {
 }
 
 /// Test the `/subscriptions` endpoint with valid request, and verify that the
-/// confirmation email looks decent
+/// confirmation email contains a valid confirmation url
 #[tokio::test]
 async fn subscribe_ok_with_confirmation() {
     let app = spawn_app().await;
@@ -120,20 +117,8 @@ async fn subscribe_ok_with_confirmation() {
 
     app.post_subscriptions(body.to_owned()).await;
 
-    fn get_first_link(body: &str) -> String {
-        let links: Vec<Link> = LinkFinder::new()
-            .links(body)
-            .filter(|l| *l.kind() == LinkKind::Url)
-            .collect();
-        println!("{:?}", links);
-        assert_eq!(links.len(), 1);
-        links[0].as_str().to_owned()
-    }
-
     let email_reqs = app.email_server.received_requests().await.unwrap();
-    let body: Value = serde_json::from_slice(&email_reqs[0].body).unwrap();
-    assert_eq!(
-        get_first_link(body["TextBody"].as_str().unwrap()),
-        get_first_link(body["HtmlBody"].as_str().unwrap()),
-    )
+    let links = app.get_confirmation_links(&email_reqs[0]);
+
+    assert_eq!(links.text, links.html)
 }
