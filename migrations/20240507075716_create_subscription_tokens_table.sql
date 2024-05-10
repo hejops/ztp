@@ -4,9 +4,9 @@
 -- whose id field has the same value of subscriber_id, otherwise the insertion
 -- fails."
 CREATE TABLE subscription_tokens(
-   subscription_token TEXT NOT NULL,
    subscriber_id uuid NOT NULL
       REFERENCES subscriptions (id),
+   subscription_token TEXT NOT NULL,
    PRIMARY KEY (subscription_token)
 );
 

@@ -28,6 +28,30 @@ async fn subscribe_ok() {
     // assert_eq!(resp.content_length().unwrap(), 0); // empty body
 }
 
+/// Test the `/subscriptions` endpoint with two valid, identical requests
+#[tokio::test]
+async fn subscribe_twice_ok() {
+    let app = spawn_app().await;
+    let body = "name=john&email=foo%40bar.com";
+
+    Mock::given(path("/email"))
+        .and(method("POST"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(2)
+        .mount(&app.email_server)
+        .await;
+
+    let resp = app.post_subscriptions(body.to_owned()).await;
+    println!("first sub ok");
+    assert_eq!(resp.status().as_u16(), 200);
+    assert!(resp.status().is_success());
+
+    let resp = app.post_subscriptions(body.to_owned()).await;
+    println!("second sub ok");
+    assert_eq!(resp.status().as_u16(), 200);
+    assert!(resp.status().is_success());
+}
+
 /// Test that the new user is added to (and can be retrieved from) db
 #[tokio::test]
 async fn subscribe_added_to_db() {

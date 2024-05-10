@@ -1,8 +1,9 @@
--- Add migration script here
--- We wrap the whole migration in a transaction to make sure
--- it succeeds or fails atomically. We will discuss SQL transactions
--- in more details towards the end of this chapter!
--- `sqlx` does not do it automatically for us.
+-- We wrap the whole migration in a transaction to make sure it succeeds or
+-- fails atomically (all or nothing). `sqlx` does not do it automatically for
+-- us.
+--
+-- https://www.postgresql.org/docs/current/sql-begin.html
+-- further reading: "Designing Data-Intensive Applications" (M. Kleppmann)
 begin
 ;
 -- old entries (before the schema update) will have the `status` field

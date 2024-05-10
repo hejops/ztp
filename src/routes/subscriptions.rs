@@ -5,7 +5,10 @@ use rand::distributions::Alphanumeric;
 use rand::thread_rng;
 use rand::Rng;
 use serde::Deserialize;
+use sqlx::Executor;
 use sqlx::PgPool;
+use sqlx::Postgres;
+use sqlx::Transaction;
 use uuid::Uuid;
 
 use crate::domain::NewSubscriber;
@@ -67,7 +70,7 @@ async fn send_confirmation_email(
     token: &str,
 ) -> Result<(), reqwest::Error> {
     let confirm_link = format!("{base_url}/subscriptions/confirm?subscription_token={token}");
-    // println!("{}", confirm_link);
+    println!("sending email to {:?}", new_sub.email);
     email_client
         .send_email(
             new_sub.email,
@@ -78,14 +81,65 @@ async fn send_confirmation_email(
         .await
 }
 
-/// `POST`. `form` is raw HTML, which is ultimately deserialized into a SQL
-/// `INSERT` query. Sends a confirmation email to the email address passed by
-/// the user.
+/// Fails if `email` not found in `subscriptions` table. The `id` returned may
+/// be empty, so this should be checked by the caller.
+///
+/// (extra function written beyond the scope of the book)
+#[tracing::instrument(name = "Getting email of subscriber", skip(pool, email))]
+pub async fn get_subscriber_id_from_email(
+    pool: &PgPool,
+    email: &SubscriberEmail,
+) -> Result<Option<Uuid>, sqlx::Error> {
+    let id = sqlx::query!(
+        "
+    SELECT id FROM subscriptions
+    WHERE email = $1
+",
+        email.as_ref(),
+    )
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| {
+        tracing::error!("bad query: {e:?}");
+        e
+    })?
+    .map(|u| u.id);
+    Ok(id)
+}
+
+/// (extra function written beyond the scope of the book)
+#[tracing::instrument(name = "Getting token of subscriber", skip(pool, id))]
+pub async fn get_subscriber_token(
+    pool: &PgPool,
+    id: &Uuid,
+) -> Result<Option<String>, sqlx::Error> {
+    let id = sqlx::query!(
+        "
+    SELECT subscription_token FROM subscription_tokens
+    WHERE subscriber_id = $1
+",
+        id,
+    )
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| {
+        tracing::error!("bad query: {e:?}");
+        e
+    })?
+    .map(|u| u.subscription_token);
+    Ok(id)
+}
+
+/// `POST`. `form` is raw HTML, which is ultimately deserialized, in order to
+/// perform two SQL `INSERT` queries. Sends a confirmation email to the email
+/// address passed by the user.
 ///
 /// Success requires:
 ///     1. user input parsed
-///     2. user added to db
+///     2. user added to db AND user token added to db (transaction)
 ///     3. email sent to user email
+///
+/// Clients are expected to call `subscriptions/confirm` next.
 ///
 /// # Request example
 ///
@@ -171,7 +225,7 @@ pub async fn subscribe(
     // one for free; try_into() is generally preferred since it uses `.` instead
     // of `::`
     // let new_sub = match NewSubscriber::try_from(form.0) {
-    let new_sub = match form.0.try_into() {
+    let new_sub: NewSubscriber = match form.0.try_into() {
         // # Request parsing
         //
         // How `Form` -> `Result` extraction works: `FromRequest` trait provides the `from_request`
@@ -202,22 +256,69 @@ pub async fn subscribe(
         Err(_) => return HttpResponse::BadRequest().finish(),
     };
 
+    // println!("starting transaction");
+
+    // if user requests `subscriptions` more than once, email and token should
+    // already be present in dbs, so just send another email (with stored token)
+    // and return early. this can be done before the transaction even begins
+    if let Ok(Some(id)) = get_subscriber_id_from_email(&pool, &new_sub.email).await {
+        let token = match get_subscriber_token(&pool, &id).await {
+            Ok(Some(t)) => t,
+            _ => return HttpResponse::InternalServerError().finish(),
+        };
+        match send_confirmation_email(&email_client, new_sub, &base_url.0, &token).await {
+            Ok(_) => return HttpResponse::Ok().finish(),
+            Err(_) => return HttpResponse::InternalServerError().finish(),
+        }
+    };
+
+    // this transaction groups 2 additions into 2 tables
+    let mut transaction = match pool.begin().await {
+        Ok(t) => t,
+        Err(_) => return HttpResponse::InternalServerError().finish(),
+    };
+
     // coerce sqlx::Error into http 500
-    let id = match insert_subscriber(&new_sub, &pool).await {
+    let id = match insert_subscriber(
+        &new_sub,
+        // &pool,
+        &mut transaction,
+    )
+    .await
+    {
         // Ok(_) => (),
         Ok(id) => id,
         Err(_) => return HttpResponse::InternalServerError().finish(),
     };
+
+    // println!("{} {:?}", id, new_sub.email);
+    // println!("storing token");
 
     let token: String = {
         let mut rng = thread_rng();
         (0..25).map(|_| rng.sample(Alphanumeric) as char).collect()
     };
 
-    match store_token(&pool, id, &token).await {
+    match store_token(
+        // &pool,
+        &mut transaction,
+        id,
+        &token,
+    )
+    .await
+    {
         Ok(_) => (),
         Err(_) => return HttpResponse::InternalServerError().finish(),
     };
+
+    // println!("storing token ok");
+
+    match transaction.commit().await {
+        Ok(_) => (),
+        Err(_) => return HttpResponse::InternalServerError().finish(),
+    };
+
+    // println!("transaction ok");
 
     match send_confirmation_email(&email_client, new_sub, &base_url.0, &token).await {
         Ok(_) => HttpResponse::Ok().finish(),
@@ -225,31 +326,37 @@ pub async fn subscribe(
     }
 }
 
-#[tracing::instrument(name = "INSERTing new subscriber token into db", skip(pool, token))]
+/// Add randomly generated `token` to `subscription_tokens` table
+#[tracing::instrument(
+    name = "INSERTing new subscriber token into subscription_tokens table",
+    skip(transaction, token)
+)]
 async fn store_token(
-    pool: &PgPool,
+    // pool: &PgPool,
+    transaction: &mut Transaction<'_, Postgres>,
     id: Uuid,
     token: &str,
 ) -> Result<(), sqlx::Error> {
-    sqlx::query!(
+    let query = sqlx::query!(
         "
     INSERT INTO subscription_tokens (subscriber_id, subscription_token)
     VALUES ($1, $2)
 ",
         id,
         token,
-    )
-    .execute(pool)
-    .await
-    .map_err(|e| {
+    );
+    transaction.execute(query).await.map_err(|e| {
         tracing::error!("bad query: {e:?}");
         e
     })?;
     Ok(())
 }
 
-/// Assign unique identifier to new user, and return this for subsequent
-/// confirmation (see `subscriptions/confirm`).
+/// Assign unique identifier to new user, add user to `subscriptions` table, and
+/// return the identifier for subsequent confirmation (see
+/// `subscriptions/confirm`).
+///
+/// Fails if user email has already been added to `subscriptions` table.
 ///
 /// Only db logic is performed here; i.e. this is independent of web framework.
 ///
@@ -266,14 +373,12 @@ async fn store_token(
 /// Notes:
 /// - functions marked as `test` are not subject to these compile-time checks
 /// - conversely, `test` functions cannot be aware of offline mode
-#[tracing::instrument(name = "INSERTing new subscriber into db", 
-    // skip(form, pool)
-    skip(new_sub, pool)
-)]
+#[tracing::instrument(name = "INSERTing new subscriber into db", skip(new_sub, transaction))]
 async fn insert_subscriber(
     // form: &FormData,
     new_sub: &NewSubscriber,
-    pool: &PgPool,
+    // pool: &PgPool,
+    transaction: &mut Transaction<'_, Postgres>,
 ) -> Result<Uuid, sqlx::Error> {
     // let query_span = tracing::info_span!("INSERTing new subscriber into db");
 
@@ -310,7 +415,10 @@ async fn insert_subscriber(
 
     let id = Uuid::new_v4();
 
-    sqlx::query!(
+    // note the difference in syntax:
+    // query!().execute(pool) -> transaction.execute(query)
+
+    let query = sqlx::query!(
         //         "
         //     INSERT INTO subscriptions (id, email, name, subscribed_at)
         //     VALUES ($1, $2, $3, $4)
@@ -323,15 +431,16 @@ async fn insert_subscriber(
         new_sub.email.as_ref(),
         new_sub.name.as_ref(),
         Utc::now(),
-    )
-    // `Executor` requires mut ref (sqlx's async does not imply mutex). PgPool handles this, but
-    // PgConnection doesn't
-    .execute(pool)
-    // .instrument(query_span)
-    .await
-    .map_err(|e| {
-        tracing::error!("bad query: {e:?}");
-        e
-    })?;
+    );
+    // `Executor` requires mut ref (`sqlx`'s async does not imply mutex). `PgPool`
+    // implements this, but `PgConnection` and `Transaction` don't
+    transaction
+        .execute(query)
+        // .instrument(query_span)
+        .await
+        .map_err(|e| {
+            tracing::error!("bad query: {e:?}");
+            e
+        })?;
     Ok(id)
 }

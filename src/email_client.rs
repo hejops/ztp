@@ -87,7 +87,7 @@ impl EmailClient {
         // POST /campaigns/{campaign_id}/actions/test
         let url = format!("{}/email", self.base_url);
         let url = Url::parse(&url).unwrap();
-        println!("{:?}", url.as_str());
+        println!("sending POST request to {:?}", url.as_str());
 
         let body = SendEmailRequest {
             from: self.sender.as_ref(),
