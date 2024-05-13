@@ -71,11 +71,45 @@ async fn send_confirmation_email(
 ) -> Result<(), reqwest::Error> {
     let confirm_link = format!("{base_url}/subscriptions/confirm?subscription_token={token}");
     println!("sending email to {:?}", new_sub.email);
+
+    // https://keats.github.io/tera/docs/#base-template
+    // https://github.com/Keats/tera/blob/3b2e96f624bd898cc96e964cd63194d58701ca4a/benches/templates.rs#L45
+
+    use tera::Context;
+    use tera::Tera;
+
+    let template = r#"<!doctype html>
+<html lang="en">
+  <head>
+    <title>{{ title }}</title>
+  </head>
+  <body>
+    <h1>You're confirmed!</h1>
+    <div id="content">
+      Hello, {{ name }}. To confirm your subscription, click
+      <a href="{{ link }}">here</a>.
+    </div>
+  </body>
+</html>"#;
+
+    let mut tera = Tera::default();
+    tera.autoescape_on(vec![]); // don't escape confirm_link
+    tera.add_raw_templates(vec![("confirm.html", template)])
+        .unwrap();
+
+    let mut context = Context::new();
+    context.insert("title", "Confirm your subscription");
+    context.insert("name", new_sub.name.as_ref());
+    context.insert("link", &confirm_link);
+
+    let html = tera.render("confirm.html", &context).unwrap();
+
     email_client
         .send_email(
             new_sub.email,
             "foo",
-            &format!("confirm at {confirm_link}").to_owned(),
+            // &format!("confirm at {confirm_link}").to_owned(),
+            &html,
             &format!("confirm at {confirm_link}").to_owned(),
         )
         .await
@@ -130,9 +164,11 @@ pub async fn get_subscriber_token(
     Ok(id)
 }
 
-/// `POST`. `form` is raw HTML, which is ultimately deserialized, in order to
-/// perform two SQL `INSERT` queries. Sends a confirmation email to the email
-/// address passed by the user.
+/// `POST` endpoint (`subscribe`)
+///
+/// `form` is raw HTML, which is ultimately deserialized, in order to perform
+/// two SQL `INSERT` queries. Sends a confirmation email to the email address
+/// passed by the user.
 ///
 /// Success requires:
 ///     1. user input parsed
