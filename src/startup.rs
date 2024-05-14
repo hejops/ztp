@@ -151,9 +151,10 @@ pub fn run(
             // remember, the guard must match the client's request type
             .route("/subscriptions", web::post().to(subscribe))
             .route("/subscriptions/confirm", web::get().to(confirm))
-            // global state, e.g. db connection, http client(s)
-            // args passed must implement either `Clone` or `web::Data`. the latter allows -all-
-            // associated fields of the struct to be shared across the app
+            // with `.app_data`, global state (e.g. db connection, http client(s)) is made available
+            // to all endpoints, if specified as args. args passed must either implement
+            // `Clone` or be wrapped with `web::Data`. the latter is preferred as -all-
+            // associated fields of the struct can be shared across the app.
             .app_data(pool.clone())
             .app_data(email_client.clone())
             // .app_data(base_url.clone())

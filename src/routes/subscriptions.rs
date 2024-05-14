@@ -1,5 +1,10 @@
+use std::fmt::Debug;
+use std::fmt::Display;
+
+use actix_web::http::StatusCode;
 use actix_web::web;
 use actix_web::HttpResponse;
+use actix_web::ResponseError;
 use chrono::Utc;
 use rand::distributions::Alphanumeric;
 use rand::thread_rng;
@@ -164,6 +169,109 @@ pub async fn get_subscriber_token(
     Ok(id)
 }
 
+/// Print a complete error chain recursively
+fn error_chain_fmt(
+    e: &impl std::error::Error,
+    f: &mut std::fmt::Formatter<'_>,
+) -> std::fmt::Result {
+    writeln!(f, "{e}\n")?;
+    let mut src = e.source();
+    while let Some(cause) = src {
+        writeln!(f, "Caused by:\n\t{}", cause)?;
+        src = cause.source();
+    }
+    Ok(())
+}
+
+// so far we haven't distinguished between failure modes (enum variants) if more
+// than one is possible; sqlx::Error, for example, has many failure modes.
+//
+// inform the caller how to react
+// inform the operator how to troubleshoot
+// inform the user how to troubleshoot (only necessary when user can actually
+// take steps to correct the error)
+//
+// internal control flow: types, methods, fields
+// external control flow: status codes (http)
+// internal reporting: logging, tracing
+// external reporting: response body
+
+// with the default Debug impl, the trace and exception.details run on, with no
+// clear visual separation, and `exception.details` will use `Debug` (instead of
+// the more concise `Display`).
+
+// only wraps a single error mode
+#[derive(Debug)]
+pub struct StoreTokenError(sqlx::Error);
+
+#[derive(Debug)]
+pub enum SubscribeError {
+    ValidationError(String),
+    DatabaseError(sqlx::Error),
+    StoreTokenError(StoreTokenError),
+    SendEmailError(reqwest::Error),
+}
+
+impl From<String> for SubscribeError {
+    fn from(value: String) -> Self { Self::ValidationError(value) }
+}
+impl From<sqlx::Error> for SubscribeError {
+    fn from(value: sqlx::Error) -> Self { Self::DatabaseError(value) }
+}
+impl From<StoreTokenError> for SubscribeError {
+    fn from(value: StoreTokenError) -> Self { Self::StoreTokenError(value) }
+}
+impl From<reqwest::Error> for SubscribeError {
+    fn from(value: reqwest::Error) -> Self { Self::SendEmailError(value) }
+}
+
+// appears with `exception.details`
+impl Display for SubscribeError {
+    fn fmt(
+        &self,
+        f: &mut std::fmt::Formatter<'_>,
+    ) -> std::fmt::Result {
+        write!(f, "Failed to create subscriber")?;
+        Ok(())
+    }
+}
+
+// enable automatic conversion into actix_web::Error. for any Error to be
+// wrapped, both Debug and Display must be implemented
+impl ResponseError for SubscribeError {
+    fn status_code(&self) -> actix_web::http::StatusCode {
+        match self {
+            Self::ValidationError(_) => StatusCode::BAD_REQUEST, // 400
+            _ => StatusCode::INTERNAL_SERVER_ERROR,              // 500
+        }
+    }
+}
+
+impl std::error::Error for SubscribeError {
+    // "`source` is useful when writing code that needs to handle a variety of
+    // errors: it provides a structured way to navigate the error chain without
+    // having to know anything about the specific error type you are working
+    // with."
+    // fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+    // Some(&self.0) }
+}
+
+// acts as a clear visual separator between a trace and exception.details:
+//
+// [HTTP REQUEST - EVENT] Error encountered while processing the incoming HTTP
+// request: Failed to store token
+// Caused by:
+//      error returned from database: column "subscription_token" of relation
+// "subscription_tokens" does not exist
+// impl Debug for SubscribeError {
+//     fn fmt(
+//         &self,
+//         f: &mut std::fmt::Formatter<'_>,
+//     ) -> std::fmt::Result {
+//         error_chain_fmt(self, f)
+//     }
+// }
+
 /// `POST` endpoint (`subscribe`)
 ///
 /// `form` is raw HTML, which is ultimately deserialized, in order to perform
@@ -221,7 +329,7 @@ pub async fn subscribe(
     pool: web::Data<PgPool>,
     email_client: web::Data<EmailClient>,
     base_url: web::Data<AppBaseUrl>,
-) -> HttpResponse {
+) -> Result<HttpResponse, SubscribeError> {
     // // with `log` feature, tracing events are redirected to `log`
     // // automatically
     // let id = Uuid::new_v4();
@@ -256,76 +364,72 @@ pub async fn subscribe(
     //     return HttpResponse::BadRequest().finish();
     // }
 
+    // # Request parsing
+    //
+    // How `Form` -> `Result` extraction works: `FromRequest` trait provides the
+    // `from_request` method, which takes `HttpRequest` + `Payload`, and
+    // implicitly 'wraps' the return value as `Result<Self, Self::Error>` (in
+    // practice, this usually means (200, 400)).
+    //
+    // Under the hood, `from_request` uses `UrlEncoded::new`, and
+    // `serde_urlencoded::from_bytes`.
+    //
+    // # Deserialization, serde
+    //
+    // `serde` defines a set of data models, agnostic to specific data formats like
+    // JSON.
+    //
+    // The `Serialize` trait (`serialize` method) converts a single type `T` (e.g.
+    // `Vec`) into `Result`:
+    //
+    // ```rust,ignore
+    //     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    // ```
+    //
+    // The `Serializer` trait (`serialize_X` methods) converts any and all arbitrary
+    // Rust types `T` into `Result`.
+    //
+    // Monomorphisation is a zero-cost abstraction (no runtime cost). Proc macros
+    // (`#[derive(Deserialize)]`) make parsing convenient.
+
     // let new_sub = match NewSubscriber::new(form.0.name, form.0.email) {
     // implementing either `TryFrom` or `TryInto` automatically implements the other
     // one for free; try_into() is generally preferred since it uses `.` instead
     // of `::`
     // let new_sub = match NewSubscriber::try_from(form.0) {
-    let new_sub: NewSubscriber = match form.0.try_into() {
-        // # Request parsing
-        //
-        // How `Form` -> `Result` extraction works: `FromRequest` trait provides the `from_request`
-        // method, which takes `HttpRequest` + `Payload`, and implicitly 'wraps' the return value
-        // as `Result<Self, Self::Error>` (in practice, this usually means (200, 400)).
-        //
-        // Under the hood, `from_request` uses `UrlEncoded::new`, and
-        // `serde_urlencoded::from_bytes`.
-        //
-        // # Deserialization, serde
-        //
-        // `serde` defines a set of data models, agnostic to specific data formats like JSON.
-        //
-        // The `Serialize` trait (`serialize` method) converts a single type `T` (e.g. `Vec`) into
-        // `Result`:
-        //
-        // ```rust,ignore
-        //     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-        // ```
-        //
-        // The `Serializer` trait (`serialize_X` methods) converts any and all arbitrary Rust types
-        // `T` into `Result`.
-        //
-        // Monomorphisation is a zero-cost abstraction (no runtime cost). Proc macros
-        // (`#[derive(Deserialize)]`) make parsing convenient.
-        Ok(n) => n,
-        // unfortunately we can't do ?-style early return/method chaining with HttpResponse
-        Err(_) => return HttpResponse::BadRequest().finish(),
-    };
+    let new_sub: NewSubscriber = form.0.try_into()?;
+    // {
+    //     Ok(n) => n,
+    //     // unfortunately we can't do ?-style early return/method chaining with
+    // HttpResponse     Err(_) => return
+    // Ok(HttpResponse::BadRequest().finish()), };
 
     // println!("starting transaction");
 
     // if user requests `subscriptions` more than once, email and token should
     // already be present in dbs, so just send another email (with stored token)
     // and return early. this can be done before the transaction even begins
-    if let Ok(Some(id)) = get_subscriber_id_from_email(&pool, &new_sub.email).await {
-        let token = match get_subscriber_token(&pool, &id).await {
-            Ok(Some(t)) => t,
-            _ => return HttpResponse::InternalServerError().finish(),
+    if let Some(id) = get_subscriber_id_from_email(&pool, &new_sub.email).await? {
+        if let Some(token) = get_subscriber_token(&pool, &id).await? {
+            return Ok(
+                match send_confirmation_email(&email_client, new_sub, &base_url.0, &token).await {
+                    Ok(_) => HttpResponse::Ok().finish(),
+                    Err(_) => HttpResponse::InternalServerError().finish(),
+                },
+            );
         };
-        match send_confirmation_email(&email_client, new_sub, &base_url.0, &token).await {
-            Ok(_) => return HttpResponse::Ok().finish(),
-            Err(_) => return HttpResponse::InternalServerError().finish(),
-        }
     };
 
     // this transaction groups 2 additions into 2 tables
-    let mut transaction = match pool.begin().await {
-        Ok(t) => t,
-        Err(_) => return HttpResponse::InternalServerError().finish(),
-    };
+    let mut transaction = pool.begin().await?;
 
     // coerce sqlx::Error into http 500
-    let id = match insert_subscriber(
+    let id = insert_subscriber(
         &new_sub,
         // &pool,
         &mut transaction,
     )
-    .await
-    {
-        // Ok(_) => (),
-        Ok(id) => id,
-        Err(_) => return HttpResponse::InternalServerError().finish(),
-    };
+    .await?;
 
     // println!("{} {:?}", id, new_sub.email);
     // println!("storing token");
@@ -335,31 +439,23 @@ pub async fn subscribe(
         (0..25).map(|_| rng.sample(Alphanumeric) as char).collect()
     };
 
-    match store_token(
+    store_token(
         // &pool,
         &mut transaction,
         id,
         &token,
     )
-    .await
-    {
-        Ok(_) => (),
-        Err(_) => return HttpResponse::InternalServerError().finish(),
-    };
+    .await?; // early return now handled by ?
 
     // println!("storing token ok");
 
-    match transaction.commit().await {
-        Ok(_) => (),
-        Err(_) => return HttpResponse::InternalServerError().finish(),
-    };
+    transaction.commit().await?;
 
     // println!("transaction ok");
 
-    match send_confirmation_email(&email_client, new_sub, &base_url.0, &token).await {
-        Ok(_) => HttpResponse::Ok().finish(),
-        Err(_) => HttpResponse::InternalServerError().finish(),
-    }
+    send_confirmation_email(&email_client, new_sub, &base_url.0, &token).await?;
+
+    Ok(HttpResponse::Ok().finish())
 }
 
 /// Add randomly generated `token` to `subscription_tokens` table
@@ -372,7 +468,11 @@ async fn store_token(
     transaction: &mut Transaction<'_, Postgres>,
     id: Uuid,
     token: &str,
-) -> Result<(), sqlx::Error> {
+) -> Result<
+    (),
+    // sqlx::Error,
+    SubscribeError,
+> {
     let query = sqlx::query!(
         "
     INSERT INTO subscription_tokens (subscriber_id, subscription_token)
@@ -381,10 +481,7 @@ async fn store_token(
         id,
         token,
     );
-    transaction.execute(query).await.map_err(|e| {
-        tracing::error!("bad query: {e:?}");
-        e
-    })?;
+    transaction.execute(query).await?;
     Ok(())
 }
 

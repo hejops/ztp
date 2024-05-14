@@ -1,3 +1,4 @@
+use sqlx::Executor;
 use wiremock::matchers::method;
 use wiremock::matchers::path;
 use wiremock::Mock;
@@ -145,4 +146,36 @@ async fn subscribe_ok_with_confirmation() {
     let links = app.get_confirmation_links(&email_reqs[0]);
 
     assert_eq!(links.text, links.html)
+}
+
+/// A test to demonstrate the verbosity of our logging (and how to reduce it)
+// RUST_LOG="sqlx=error,info" TEST_LOG=true cargo test fatal | bunyan
+// note that while bunyan's output does highlight errors in a very prominent colour, this
+// reason/information is not attached to the final log (HTTP REQUEST - END)
+// [2024-05-14T18:42:33.354685124Z]  INFO: test/795607 on joseph: [HTTP REQUEST - END]
+// (target=tracing_actix_web::root_span_builder, line=41, elapsed_milliseconds=80, http.method=POST,
+// http.status_code=500, http.user_agent="", http.client_ip=127.0.0.1, exception.message="Failed to
+// store token", otel.name="HTTP POST /subscriptions", http.scheme=http,
+// request_id=2e7010d5-66d6-4dcb-bf76-ee8ff16b1923, otel.status_code=ERROR, otel.kind=server,
+// http.host=localhost:41645, http.route=/subscriptions, http.flavor=1.1,
+// http.target=/subscriptions)
+
+#[tokio::test]
+async fn fatal_db_error() {
+    let app = spawn_app().await;
+    let body = "name=john&email=foo%40bar.com";
+
+    sqlx::query!(
+        "
+        ALTER TABLE subscription_tokens
+        DROP column subscription_token
+"
+    )
+    .execute(&app.pool)
+    .await
+    .unwrap();
+
+    let resp = app.post_subscriptions(body.to_owned()).await;
+
+    assert_eq!(resp.status(), 500);
 }

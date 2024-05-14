@@ -33,10 +33,14 @@ async fn confirm_ok() {
 
     let email_reqs = app.email_server.received_requests().await.unwrap();
 
-    let resp = reqwest::get(app.get_confirmation_links(&email_reqs[0]).text)
-        .await
-        .unwrap();
+    let link = app.get_confirmation_links(&email_reqs[0]).text;
+
+    let resp = reqwest::get(link.clone()).await.unwrap();
     assert_eq!(resp.status().as_u16(), 200);
+
+    // ensure user can only be confirmed once (not idempotent)
+    let resp = reqwest::get(link.clone()).await.unwrap();
+    assert_eq!(resp.status().as_u16(), 500);
 }
 
 /// Test that requesting the confirmation url modifies the user's `status` in

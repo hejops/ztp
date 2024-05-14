@@ -84,9 +84,10 @@ impl TestApp {
             .expect("execute request")
     }
 
+    /// Extract text and html links from an email response (e.g. from mailchimp)
     pub fn get_confirmation_links(
         &self,
-        email_req: &wiremock::Request,
+        email_resp: &wiremock::Request,
     ) -> ConfirmationLinks {
         // fn get_first_link(body: &str) -> Url {
         let get_first_link = |body: &str| {
@@ -106,7 +107,7 @@ impl TestApp {
             link
         };
 
-        let body: Value = serde_json::from_slice(&email_req.body).unwrap();
+        let body: Value = serde_json::from_slice(&email_resp.body).unwrap();
 
         // this will be `base_url`/subscriptions/confirm?subscription_token=...
         let text = get_first_link(body["TextBody"].as_str().unwrap());
