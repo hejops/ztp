@@ -158,8 +158,8 @@ async fn fatal_db_error() {
 
     sqlx::query!(
         "
-        ALTER TABLE subscription_tokens
-        DROP column subscription_token
+        -- ALTER TABLE subscription_tokens DROP COLUMN subscription_token
+        ALTER TABLE subscriptions DROP COLUMN email
 "
     )
     .execute(&app.pool)
