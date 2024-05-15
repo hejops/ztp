@@ -4,6 +4,7 @@ use actix_web::http::StatusCode;
 use actix_web::web;
 use actix_web::HttpResponse;
 use actix_web::ResponseError;
+use anyhow::Context;
 use chrono::Utc;
 use rand::distributions::Alphanumeric;
 use rand::thread_rng;
@@ -222,12 +223,17 @@ pub enum SubscribeError {
     //
     // #[error("Failed to store token")]
     // StoreTokenError(#[source] sqlx::Error),
+    //
     // #[error(transparent)] // note: the docs of thiserror are quite poor
-    #[error("{1}")]
-    // "Transparent delegates both `Display`'s and `source`'s implementation to the type wrapped by
-    // `UnexpectedError`."
     // UnexpectedError(#[from] Box<dyn std::error::Error>, String),
-    UnexpectedError(#[source] Box<dyn std::error::Error>, String),
+    //
+    // "Transparent delegates both `Display`'s and `source`'s implementation to the type wrapped
+    // by `UnexpectedError`."
+    //
+    // #[error("{1}")]
+    // UnexpectedError(#[source] Box<dyn std::error::Error>, String),
+    #[error(transparent)]
+    UnexpectedError(#[from] anyhow::Error),
 }
 
 // `impl From<T> for X` enables automatic wrapping of `T` in one variant of `X`,
@@ -434,17 +440,12 @@ pub async fn subscribe(
 
     // this transaction groups 2 additions into 2 tables
     // wrap sqlx::Error in our own wrapper type, allowing early return with ?
-    let mut transaction = pool.begin().await.map_err(|e| {
-        SubscribeError::UnexpectedError(Box::new(e), "Failed to begin transaction".to_owned())
-    })?;
+    // `context` is like `map_err`, with extra context (duh)
+    let mut transaction = pool.begin().await.context("Failed to begin transaction")?;
 
     let id = insert_subscriber(&new_sub, &mut transaction)
         .await
-        // map_err is required since our function returns generic sqlx::Error; this may be changed
-        // soon
-        .map_err(|e| {
-            SubscribeError::UnexpectedError(Box::new(e), "Failed to insert subscriber".to_owned())
-        })?;
+        .context("Failed to insert subscriber")?;
 
     // println!("{} {:?}", id, new_sub.email);
     // println!("storing token");
@@ -457,24 +458,21 @@ pub async fn subscribe(
     // map_err is not needed because the function already returns a SubscribeError
     store_token(&mut transaction, id, &token)
         .await
-        .map_err(|e| {
-            SubscribeError::UnexpectedError(Box::new(e), "Failed to store token".to_owned())
-        })?;
+        .context("Failed to store token")?;
 
     // println!("storing token ok");
 
-    transaction.commit().await.map_err(|e| {
-        SubscribeError::UnexpectedError(Box::new(e), "Failed to commit transaction".to_owned())
-    })?;
+    transaction
+        .commit()
+        .await
+        .context("Failed to commit transaction")?;
 
     // println!("transaction ok");
 
     // we don't need map_err here; implementing `From` automagically enables ?
     send_confirmation_email(&email_client, new_sub, &base_url.0, &token)
         .await
-        .map_err(|e| {
-            SubscribeError::UnexpectedError(Box::new(e), "Failed to send email".to_owned())
-        })?;
+        .context("Failed to send email")?;
 
     Ok(HttpResponse::Ok().finish())
 }
