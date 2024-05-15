@@ -196,48 +196,64 @@ fn error_chain_fmt(
 // internal reporting: logging, tracing
 // external reporting: response body
 
-// with the default Debug impl, the trace and exception.details run on, with no
-// clear visual separation, and `exception.details` will use `Debug` (instead of
-// the more concise `Display`).
-
-// only wraps a single error mode
-#[derive(Debug)]
-pub struct StoreTokenError(sqlx::Error);
-
-#[derive(Debug)]
+/// A wrapper type that allows various error types (e.g. `sqlx::Error`) to be
+/// coerced into `actix_web::Error`, with varying http codes (typically 500, but
+/// sometimes 400).
+// #[derive(Debug)]
+//
 pub enum SubscribeError {
     ValidationError(String),
-    DatabaseError(sqlx::Error),
-    StoreTokenError(StoreTokenError),
     SendEmailError(reqwest::Error),
+
+    // DatabaseError(sqlx::Error),
+    CommitTransactionError(sqlx::Error),
+    InsertSubscriberError(sqlx::Error),
+    PoolError(sqlx::Error),
+    StoreTokenError(sqlx::Error),
 }
 
+// `impl From<T> for X` enables automatic wrapping of `T` in one variant of `X`,
+// and thus ?. however, we cannot use `From` if `T` can be wrapped by multiple
+// variants of X.
 impl From<String> for SubscribeError {
     fn from(value: String) -> Self { Self::ValidationError(value) }
-}
-impl From<sqlx::Error> for SubscribeError {
-    fn from(value: sqlx::Error) -> Self { Self::DatabaseError(value) }
-}
-impl From<StoreTokenError> for SubscribeError {
-    fn from(value: StoreTokenError) -> Self { Self::StoreTokenError(value) }
 }
 impl From<reqwest::Error> for SubscribeError {
     fn from(value: reqwest::Error) -> Self { Self::SendEmailError(value) }
 }
 
-// appears with `exception.details`
+// for any Error to be wrapped, -both- `Debug` and `Display` must be
+// implemented. with the default `Debug` impl, the trace and exception.details
+// run on, with no clear visual separation, and `exception.details` will use
+// `Debug` (instead of the more concise `Display`).
+impl Debug for SubscribeError {
+    fn fmt(
+        &self,
+        f: &mut std::fmt::Formatter<'_>,
+    ) -> std::fmt::Result {
+        error_chain_fmt(self, f)?;
+        Ok(())
+    }
+}
+
 impl Display for SubscribeError {
     fn fmt(
         &self,
         f: &mut std::fmt::Formatter<'_>,
     ) -> std::fmt::Result {
-        write!(f, "Failed to create subscriber")?;
-        Ok(())
+        // write!(f, "Failed to create subscriber")?;
+        match self {
+            Self::CommitTransactionError(_) => write!(f, "Failed to commit transaction"),
+            Self::InsertSubscriberError(_) => write!(f, "Failed to insert subscriber"),
+            Self::PoolError(_) => write!(f, "Failed to connect to db pool"),
+            Self::SendEmailError(_) => write!(f, "Failed to send confirmation email"),
+            Self::StoreTokenError(_) => write!(f, "Failed to store token"),
+            Self::ValidationError(e) => write!(f, "{e}"),
+        }
     }
 }
 
-// enable automatic conversion into actix_web::Error. for any Error to be
-// wrapped, both Debug and Display must be implemented
+// enable automatic conversion into actix_web::Error
 impl ResponseError for SubscribeError {
     fn status_code(&self) -> actix_web::http::StatusCode {
         match self {
@@ -252,25 +268,19 @@ impl std::error::Error for SubscribeError {
     // errors: it provides a structured way to navigate the error chain without
     // having to know anything about the specific error type you are working
     // with."
-    // fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-    // Some(&self.0) }
-}
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        // Some(&self.0)
+        match self {
+            Self::ValidationError(_) => None,
 
-// acts as a clear visual separator between a trace and exception.details:
-//
-// [HTTP REQUEST - EVENT] Error encountered while processing the incoming HTTP
-// request: Failed to store token
-// Caused by:
-//      error returned from database: column "subscription_token" of relation
-// "subscription_tokens" does not exist
-// impl Debug for SubscribeError {
-//     fn fmt(
-//         &self,
-//         f: &mut std::fmt::Formatter<'_>,
-//     ) -> std::fmt::Result {
-//         error_chain_fmt(self, f)
-//     }
-// }
+            Self::CommitTransactionError(e) => Some(e),
+            Self::InsertSubscriberError(e) => Some(e),
+            Self::PoolError(e) => Some(e),
+            Self::SendEmailError(e) => Some(e),
+            Self::StoreTokenError(e) => Some(e),
+        }
+    }
+}
 
 /// `POST` endpoint (`subscribe`)
 ///
@@ -406,11 +416,12 @@ pub async fn subscribe(
 
     // println!("starting transaction");
 
-    // if user requests `subscriptions` more than once, email and token should
-    // already be present in dbs, so just send another email (with stored token)
-    // and return early. this can be done before the transaction even begins
-    if let Some(id) = get_subscriber_id_from_email(&pool, &new_sub.email).await? {
-        if let Some(token) = get_subscriber_token(&pool, &id).await? {
+    // extra: if user requests `subscriptions` more than once, email and token
+    // should already be present in dbs, so just send another email (with stored
+    // token) and return early. this can be done before the transaction even
+    // begins
+    if let Ok(Some(id)) = get_subscriber_id_from_email(&pool, &new_sub.email).await {
+        if let Ok(Some(token)) = get_subscriber_token(&pool, &id).await {
             return Ok(
                 match send_confirmation_email(&email_client, new_sub, &base_url.0, &token).await {
                     Ok(_) => HttpResponse::Ok().finish(),
@@ -421,15 +432,14 @@ pub async fn subscribe(
     };
 
     // this transaction groups 2 additions into 2 tables
-    let mut transaction = pool.begin().await?;
+    // wrap sqlx::Error in our own wrapper type, allowing early return with ?
+    let mut transaction = pool.begin().await.map_err(SubscribeError::PoolError)?;
 
-    // coerce sqlx::Error into http 500
-    let id = insert_subscriber(
-        &new_sub,
-        // &pool,
-        &mut transaction,
-    )
-    .await?;
+    let id = insert_subscriber(&new_sub, &mut transaction)
+        .await
+        // map_err is required since our function returns generic sqlx::Error; this may be changed
+        // soon
+        .map_err(SubscribeError::InsertSubscriberError)?;
 
     // println!("{} {:?}", id, new_sub.email);
     // println!("storing token");
@@ -439,20 +449,19 @@ pub async fn subscribe(
         (0..25).map(|_| rng.sample(Alphanumeric) as char).collect()
     };
 
-    store_token(
-        // &pool,
-        &mut transaction,
-        id,
-        &token,
-    )
-    .await?; // early return now handled by ?
+    // map_err is not needed because the function already returns a SubscribeError
+    store_token(&mut transaction, id, &token).await?;
 
     // println!("storing token ok");
 
-    transaction.commit().await?;
+    transaction
+        .commit()
+        .await
+        .map_err(SubscribeError::CommitTransactionError)?;
 
     // println!("transaction ok");
 
+    // we don't need map_err here; implementing `From` automagically enables ?
     send_confirmation_email(&email_client, new_sub, &base_url.0, &token).await?;
 
     Ok(HttpResponse::Ok().finish())
@@ -481,7 +490,10 @@ async fn store_token(
         id,
         token,
     );
-    transaction.execute(query).await?;
+    transaction
+        .execute(query)
+        .await
+        .map_err(SubscribeError::StoreTokenError)?;
     Ok(())
 }
 
