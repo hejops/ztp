@@ -20,8 +20,8 @@ pub struct Parameters {
 
 #[derive(thiserror::Error)]
 pub enum ConfirmError {
-    #[error("{0}")]
-    ValidationError(String),
+    #[error("Token not found")]
+    ValidationError,
 
     #[error(transparent)]
     UnexpectedError(#[from] anyhow::Error),
@@ -40,8 +40,8 @@ impl Debug for ConfirmError {
 impl ResponseError for ConfirmError {
     fn status_code(&self) -> actix_web::http::StatusCode {
         match self {
-            Self::ValidationError(_) => StatusCode::BAD_REQUEST, // 400
-            _ => StatusCode::INTERNAL_SERVER_ERROR,              // 500
+            Self::ValidationError => StatusCode::UNAUTHORIZED, // 400
+            _ => StatusCode::INTERNAL_SERVER_ERROR,            // 500
         }
     }
 }
@@ -117,7 +117,7 @@ pub async fn confirm(
     let id = get_subscriber_id_from_token(&pool, &params.subscription_token)
         .await
         .context("Failed to get subscriber id from token")?
-        .context("Got empty id from db")?;
+        .ok_or(ConfirmError::ValidationError)?;
 
     // extra: prevent user from being confirmed twice (this is only a formality,
     // because `confirm_subscriber` is actually idempotent)
