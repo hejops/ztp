@@ -137,11 +137,11 @@ pub async fn get_subscriber_id_from_email(
         email.as_ref(),
     )
     .fetch_optional(pool)
-    .await
-    .map_err(|e| {
-        tracing::error!("bad query: {e:?}");
-        e
-    })?
+    .await?
+    // .map_err(|e| {
+    //     tracing::error!("bad query: {e:?}");
+    //     e
+    // })
     .map(|u| u.id);
     Ok(id)
 }
@@ -196,6 +196,15 @@ fn error_chain_fmt(
 // internal reporting: logging, tracing
 // external reporting: response body
 
+// if callers need to know error variants and how to react to them (typically
+// with `match`), use `thiserror`. otherwise use `anyhow` to hide implementation
+// details.
+
+// currently, a single error produces logs multiple times, due to an abundance
+// of tracing::error calls.  as a rule of thumb, `?` makes logging/tracing
+// redundant, and logs should be done as far upstream as possible (typically by
+// `middleware`).
+
 /// A wrapper type that allows various error types (e.g. `sqlx::Error`) to be
 /// coerced into `actix_web::Error`, with varying http codes (typically 500, but
 /// sometimes 400).
@@ -206,8 +215,6 @@ pub enum SubscribeError {
     // String does not (and cannot) impl Error
     #[error("{0}")]
     ValidationError(String),
-    // all these errors are actually just clutter, when you realise that the only thing callers
-    // care about is what status code to return
     // #[error("Failed to send email")]
     // SendEmailError(#[from] reqwest::Error),
     //
@@ -223,6 +230,10 @@ pub enum SubscribeError {
     //
     // #[error("Failed to store token")]
     // StoreTokenError(#[source] sqlx::Error),
+    //
+    // all the above errors are actually just clutter, when you realise that the only thing
+    // callers care about is what status code to return. so they can all be grouped in a single
+    // error
     //
     // #[error(transparent)] // note: the docs of thiserror are quite poor
     // UnexpectedError(#[from] Box<dyn std::error::Error>, String),
@@ -586,9 +597,11 @@ async fn insert_subscriber(
         .execute(query)
         // .instrument(query_span)
         .await
-        .map_err(|e| {
-            tracing::error!("bad query: {e:?}");
-            e
-        })?;
+        // .map_err(|e| {
+        //     // appears immediately after `[... - EVENT]`
+        //     tracing::error!("bad query: {e:?}");
+        //     e
+        // })
+    ?;
     Ok(id)
 }
