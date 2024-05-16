@@ -1,9 +1,16 @@
+use std::fmt::Debug;
+
+use actix_web::http::StatusCode;
+use actix_web::web;
 use actix_web::web::Query;
-use actix_web::web::{self};
 use actix_web::HttpResponse;
+use actix_web::ResponseError;
+use anyhow::Context;
 use serde::Deserialize;
 use sqlx::PgPool;
 use uuid::Uuid;
+
+use super::error_chain_fmt;
 
 #[derive(Deserialize)]
 pub struct Parameters {
@@ -11,6 +18,33 @@ pub struct Parameters {
     subscription_token: String,
 }
 
+#[derive(thiserror::Error)]
+pub enum ConfirmError {
+    #[error("{0}")]
+    ValidationError(String),
+
+    #[error(transparent)]
+    UnexpectedError(#[from] anyhow::Error),
+}
+
+impl Debug for ConfirmError {
+    fn fmt(
+        &self,
+        f: &mut std::fmt::Formatter<'_>,
+    ) -> std::fmt::Result {
+        error_chain_fmt(self, f)?;
+        Ok(())
+    }
+}
+
+impl ResponseError for ConfirmError {
+    fn status_code(&self) -> actix_web::http::StatusCode {
+        match self {
+            Self::ValidationError(_) => StatusCode::BAD_REQUEST, // 400
+            _ => StatusCode::INTERNAL_SERVER_ERROR,              // 500
+        }
+    }
+}
 /// Fails if `token` not found in `subscription_tokens` table. The `id` returned
 /// may be empty, so this should be checked by the caller.
 #[tracing::instrument(name = "Getting id of new subscriber", skip(pool, token))]
@@ -30,11 +64,11 @@ async fn get_subscriber_id_from_token(
         token,
     )
     .fetch_optional(pool)
-    .await
-    .map_err(|e| {
-        tracing::error!("bad query: {e:?}");
-        e
-    })?
+    .await?
+    // .map_err(|e| {
+    //     tracing::error!("bad query: {e:?}");
+    //     e
+    // })
     .map(|u| u.subscriber_id);
     Ok(id)
 }
@@ -54,10 +88,11 @@ async fn confirm_subscriber(
     )
     .execute(pool)
     .await
-    .map_err(|e| {
-        tracing::error!("bad query: {e:?}");
-        e
-    })?;
+    // .map_err(|e| {
+    //     tracing::error!("bad query: {e:?}");
+    //     e
+    // })
+    ?;
     Ok(())
 }
 
@@ -70,20 +105,22 @@ async fn confirm_subscriber(
 pub async fn confirm(
     params: Query<Parameters>,
     pool: web::Data<PgPool>,
-) -> HttpResponse {
-    // basic string validation: ensure token is 25 chars long, alphanumeric (no
-    // spaces). entropy could also be checked (but this is probably overkill)
+    // ) -> HttpResponse {
+) -> Result<HttpResponse, ConfirmError> {
+    // extra: basic string validation: ensure token is 25 chars long, alphanumeric
+    // (no spaces). entropy could also be checked (but this is probably
+    // overkill)
     if params.subscription_token.len() != 25 || params.subscription_token.contains(' ') {
-        return HttpResponse::InternalServerError().finish();
+        return Ok(HttpResponse::InternalServerError().finish());
     }
 
-    let id = match get_subscriber_id_from_token(&pool, &params.subscription_token).await {
-        Ok(Some(id)) => id,
-        _ => return HttpResponse::InternalServerError().finish(),
-    };
+    let id = get_subscriber_id_from_token(&pool, &params.subscription_token)
+        .await
+        .context("Failed to get subscriber id from token")?
+        .context("Got empty id from db")?;
 
-    // prevent user from being confirmed twice (this is only a formality, because
-    // `confirm_subscriber` is actually idempotent)
+    // extra: prevent user from being confirmed twice (this is only a formality,
+    // because `confirm_subscriber` is actually idempotent)
     if sqlx::query!(
         "
     SELECT status FROM subscriptions
@@ -97,11 +134,12 @@ pub async fn confirm(
     .map(|u| u.status)
         == Some("confirmed".to_owned())
     {
-        return HttpResponse::InternalServerError().finish();
+        return Ok(HttpResponse::InternalServerError().finish());
     };
 
-    match confirm_subscriber(&pool, id).await {
-        Ok(_) => HttpResponse::Ok().finish(),
-        Err(_) => HttpResponse::InternalServerError().finish(),
-    }
+    confirm_subscriber(&pool, id)
+        .await
+        .context("Failed to confirm subscriber")?;
+
+    Ok(HttpResponse::Ok().finish())
 }

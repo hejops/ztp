@@ -170,11 +170,17 @@ pub async fn get_subscriber_token(
 }
 
 /// Print a complete error chain recursively
-fn error_chain_fmt(
+pub fn error_chain_fmt(
     e: &impl std::error::Error,
     f: &mut std::fmt::Formatter<'_>,
 ) -> std::fmt::Result {
     writeln!(f, "{e}\n")?;
+
+    // "`source` is useful when writing code that needs to handle a variety of
+    // errors: it provides a structured way to navigate the error chain without
+    // having to know anything about the specific error type you are working
+    // with."
+
     let mut src = e.source();
     while let Some(cause) = src {
         writeln!(f, "Caused by:\n\t{}", cause)?;
@@ -281,25 +287,6 @@ impl ResponseError for SubscribeError {
         }
     }
 }
-
-// "`source` is useful when writing code that needs to handle a variety of
-// errors: it provides a structured way to navigate the error chain without
-// having to know anything about the specific error type you are working
-// with."
-// impl std::error::Error for SubscribeError {
-//     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-//         // Some(&self.0)
-//         match self {
-//             Self::ValidationError(_) => None,
-//
-//             Self::CommitTransactionError(e) => Some(e),
-//             Self::InsertSubscriberError(e) => Some(e),
-//             Self::PoolError(e) => Some(e),
-//             Self::SendEmailError(e) => Some(e),
-//             Self::StoreTokenError(e) => Some(e),
-//         }
-//     }
-// }
 
 /// `POST` endpoint (`subscribe`)
 ///
@@ -439,14 +426,15 @@ pub async fn subscribe(
     // token) and return early. this can be done before the transaction even
     // begins
     if let Ok(Some(id)) = get_subscriber_id_from_email(&pool, &new_sub.email).await {
-        if let Ok(Some(token)) = get_subscriber_token(&pool, &id).await {
-            return Ok(
-                match send_confirmation_email(&email_client, new_sub, &base_url.0, &token).await {
-                    Ok(_) => HttpResponse::Ok().finish(),
-                    Err(_) => HttpResponse::InternalServerError().finish(),
-                },
-            );
-        };
+        let token = get_subscriber_token(&pool, &id)
+            .await
+            .context("Failed to get subscriber token")?
+            .context("Got empty token from db")?;
+
+        send_confirmation_email(&email_client, new_sub, &base_url.0, &token)
+            .await
+            .context("Failed to send email")?;
+        return Ok(HttpResponse::Ok().finish());
     };
 
     // this transaction groups 2 additions into 2 tables
