@@ -1,9 +1,20 @@
+use std::fmt::Display;
+
 use validator::ValidateEmail;
 
 #[derive(Debug)]
 /// This struct exists only for email parsing and can be used for both senders
 /// and recipients.
 pub struct SubscriberEmail(String);
+
+impl Display for SubscriberEmail {
+    fn fmt(
+        &self,
+        f: &mut std::fmt::Formatter<'_>,
+    ) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
 
 impl SubscriberEmail {
     pub fn parse(email: String) -> Result<Self, String> {

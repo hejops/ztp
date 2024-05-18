@@ -33,6 +33,7 @@ name = "zero-to-prod"
 [dependencies]
 actix-web = "4.5.1"
 anyhow = "1.0.83"
+base64 = "0.22.1"
 chrono = { version = "0.4.38", features = ["clock"] }
 claims = "0.7.1"
 config = "0.14.0"

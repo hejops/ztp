@@ -73,15 +73,26 @@ impl TestApp {
         &self,
         body: String,
     ) -> reqwest::Response {
-        let client = reqwest::Client::new();
-
-        client
+        reqwest::Client::new()
             .post(format!("{}/subscriptions", self.addr))
             .header("Content-Type", "application/x-www-form-urlencoded")
             .body(body)
             .send()
             .await
-            .expect("execute request")
+            .unwrap()
+    }
+
+    pub async fn post_newsletters(
+        &self,
+        body: serde_json::Value,
+    ) -> reqwest::Response {
+        reqwest::Client::new()
+            .post(format!("{}/newsletters", self.addr))
+            .basic_auth(Uuid::new_v4().to_string(), Some(Uuid::new_v4().to_string()))
+            .json(&body)
+            .send()
+            .await
+            .unwrap()
     }
 
     /// Extract text and html links from an email response (e.g. from mailchimp)

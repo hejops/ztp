@@ -14,6 +14,7 @@ use crate::configuration::Settings;
 use crate::email_client::EmailClient;
 use crate::routes::confirm;
 use crate::routes::health_check;
+use crate::routes::publish;
 use crate::routes::subscribe;
 
 /// Wrapper for actix's `Server` with access to the bound port. Not to be
@@ -136,14 +137,6 @@ pub fn run(
         // essentially equivalent to a `match` block, where we try to exhaust a series
         // of routes (match arms)
 
-        // endpoint: GET /health_check
-
-        // endpoint: POST /subscriptions
-        // who: visitors
-        // what: subscribe to blog
-        // why: receive email updates
-        // e.g. /name=john&email=foo%40bar.com (application/x-www-form-urlencoded)
-
         App::new()
             // .wrap(Logger::default())
             .wrap(TracingLogger::default()) // wrap the whole app in tracing middleware
@@ -151,6 +144,7 @@ pub fn run(
             // remember, the guard must match the client's request type
             .route("/subscriptions", web::post().to(subscribe))
             .route("/subscriptions/confirm", web::get().to(confirm))
+            .route("/newsletters", web::post().to(publish))
             // with `.app_data`, global state (e.g. db connection, http client(s)) is made available
             // to all endpoints, if specified as args. args passed must either implement
             // `Clone` or be wrapped with `web::Data`. the latter is preferred as -all-

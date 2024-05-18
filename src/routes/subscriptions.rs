@@ -111,7 +111,7 @@ async fn send_confirmation_email(
 
     email_client
         .send_email(
-            new_sub.email,
+            &new_sub.email,
             "foo",
             // &format!("confirm at {confirm_link}").to_owned(),
             &html,
