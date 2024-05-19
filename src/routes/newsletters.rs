@@ -9,10 +9,18 @@ use actix_web::HttpRequest;
 use actix_web::HttpResponse;
 use actix_web::ResponseError;
 use anyhow::Context;
+use argon2::password_hash::Salt;
+use argon2::Argon2;
+use argon2::PasswordHash;
+use argon2::PasswordHasher;
+use argon2::PasswordVerifier;
+use base64::engine::general_purpose;
 use base64::Engine;
+use secrecy::ExposeSecret;
 use secrecy::Secret;
 use serde::Deserialize;
 use sqlx::PgPool;
+use uuid::Uuid;
 
 use super::error_chain_fmt;
 use crate::domain::SubscriberEmail;
@@ -122,6 +130,88 @@ fn basic_authentication(headers: &HeaderMap) -> Result<Credentials, anyhow::Erro
     Ok(Credentials { username, password })
 }
 
+// on salting: "For each user, we generate a unique random string (salt), which
+// is prepended to the user password before generating the hash." The salt does
+// not need to be hashed, just random.
+//
+// this means we need to validate in 2 steps: first query `users` table to get
+// the user's salt, then use the salt to calculate the hashed password
+//
+// however, notice now that, in comparison to our initial sha3 implementation,
+// hashing now involves several parameters, which are defined in this function.
+// if we were to change any of these parameters, and lose information on the
+// params used to generate the existing hashes, authentication would break
+// completely. thus, all such variable params must be stored in the db
+// in PHC format, which captures all necessary information in a
+// single string:
+//
+// # ${algo}${algo version}${params (,-separated)}${hash}${salt}
+// (with newlines for clarity)
+// $argon2id$v=19$m=65536,t=2,p=1
+// $gZiV/M1gPc22ElAH/Jh1Hw
+// $CWOrkoo7oJBQ/iyh7uJ0LO2aLEfrHwTWllSAxT0zRno
+async fn validate_credentials(
+    creds: Credentials,
+    pool: &PgPool,
+) -> Result<Uuid, PublishError> {
+    let stored = sqlx::query!(
+        "
+        SELECT user_id, password_hash -- , salt
+        FROM users
+        WHERE username = $1
+        -- AND password_hash = $2
+    ",
+        creds.username,
+        // format!("{password_hash:x}"), // GenericArray -> hexadecimal
+    )
+    .fetch_optional(pool)
+    .await
+    .context("No user with the supplied username was found in users table")
+    .map_err(PublishError::UnexpectedError)?
+    .ok_or_else(|| anyhow::anyhow!("Invalid credentials"))?;
+
+    // use sha3::Digest;
+    // use sha3::Sha3_256;
+    // let hashed_pw = Sha3_256::digest(creds.password.expose_secret().as_bytes());
+
+    // let hashed_pw = Argon2::new(
+    //     // OWASP recommendation
+    //     argon2::Algorithm::Argon2id,
+    //     argon2::Version::V0x13,
+    //     argon2::Params::new(15000, 2, 1, None).unwrap(),
+    // )
+    // // requires `PasswordHasher` trait.
+    // // note: argon2 0.5.3 no longer allows the `salt` arg to be a `&str`, hence
+    // // the lengthy type conversion (String -> bytes -> b64 -> Result<Salt>)
+    // .hash_password(
+    //     creds.password.expose_secret().as_bytes(),
+    //     // &stored.salt
+    //     Salt::from_b64(&general_purpose::STANDARD.encode(stored.salt.
+    // as_bytes())).unwrap(), )
+    // .unwrap();
+
+    let hashed_pw = PasswordHash::new(&stored.password_hash)
+        .context("Failed to read PHC string")
+        .map_err(PublishError::UnexpectedError)?;
+
+    Argon2::default()
+        .verify_password(creds.password.expose_secret().as_bytes(), &hashed_pw)
+        .context("Invalid password")
+        .map_err(PublishError::AuthError)?;
+
+    Ok(stored.user_id)
+}
+
+#[tracing::instrument(
+    name = "Publishing newsletter",
+    skip(body, pool, email_client, request),
+    // `Empty` indicates that the value of a field is not currently present but will be recorded
+    // later (with `Span.record`).
+    fields(
+        username=tracing::field::Empty,
+        user_id=tracing::field::Empty,
+    )
+)]
 pub async fn publish(
     body: web::Json<Newsletter>,
     // like in `subscribe`
@@ -130,6 +220,16 @@ pub async fn publish(
     request: HttpRequest,
 ) -> Result<HttpResponse, PublishError> {
     let creds = basic_authentication(request.headers()).map_err(PublishError::AuthError)?;
+
+    tracing::Span::current().record(
+        "username",
+        // &creds.username,
+        tracing::field::display(&creds.username),
+    );
+
+    let id = validate_credentials(creds, &pool).await?;
+
+    tracing::Span::current().record("user_id", tracing::field::display(id));
 
     let subs = get_confirmed_subscribers(&pool).await?;
     for sub in subs {

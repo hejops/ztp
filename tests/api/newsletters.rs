@@ -42,6 +42,7 @@ async fn create_unconfirmed_subscriber(app: &TestApp) -> ConfirmationLinks {
     app.get_confirmation_links(&email_reqs)
 }
 
+/// Simulate `/subscriptions/confirm`
 async fn create_confirmed_subscriber(app: &TestApp) {
     let link = create_unconfirmed_subscriber(app).await;
     reqwest::get(link.html)

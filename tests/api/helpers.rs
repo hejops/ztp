@@ -1,3 +1,6 @@
+use argon2::password_hash::SaltString;
+use argon2::Argon2;
+use argon2::PasswordHasher;
 use linkify::Link;
 use linkify::LinkFinder;
 use linkify::LinkKind;
@@ -57,11 +60,74 @@ pub struct TestApp {
     pub port: u16,
     pub pool: PgPool,
     pub email_server: MockServer,
+    // personally, i would've used a method for user-related stuff, but presumably keeping it as a
+    // struct field makes creds easier to access, let's see...
+    pub test_user: TestUser,
 }
 
 pub struct ConfirmationLinks {
     pub text: Url,
     pub html: Url,
+}
+
+/// At least one user is required to send newsletters.
+pub struct TestUser {
+    user_id: Uuid,
+    username: String,
+    /// Unhashed (raw) in this struct, but hashed when added to db
+    password: String,
+}
+
+// passwords must be stored after applying a deterministic, injective function
+// (cryptographic hash). in other words, we
+// store only hashed passwords. when we take a raw password supplied by user,
+// hash it and check against our stored hash.
+//
+// initially, we chose SHA3-256 (`sha3` crate) for the implementation. for
+// further resistance to dictionary attacks, this was changed to Argon2id
+// (`argon2`).
+impl TestUser {
+    /// Generate raw credentials (no password hashing)
+    pub fn generate() -> Self {
+        Self {
+            user_id: Uuid::new_v4(),
+            username: Uuid::new_v4().to_string(),
+            password: Uuid::new_v4().to_string(),
+        }
+    }
+
+    /// Hash password (using `argon2` with default params) and store user in
+    /// users table
+    async fn store(
+        &self,
+        pool: &PgPool,
+    ) {
+        // previously, sha3 hashes were stored in their lower hex representations (`:x`)
+
+        // let password_hash = Sha3_256::digest(&self.password);
+        // let password_hash = format!("{password_hash:x}");
+
+        let password_hash = Argon2::default()
+            .hash_password(
+                self.password.as_bytes(),
+                &SaltString::generate(&mut rand::thread_rng()),
+            )
+            .unwrap()
+            .to_string();
+
+        sqlx::query!(
+            "
+            INSERT INTO users (user_id, username, password_hash)
+            VALUES ($1, $2, $3)
+",
+            self.user_id,
+            self.username,
+            password_hash,
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+    }
 }
 
 impl TestApp {
@@ -82,13 +148,16 @@ impl TestApp {
             .unwrap()
     }
 
+    /// Requires authorization (via `test_user`)
     pub async fn post_newsletters(
         &self,
         body: serde_json::Value,
     ) -> reqwest::Response {
         reqwest::Client::new()
             .post(format!("{}/newsletters", self.addr))
-            .basic_auth(Uuid::new_v4().to_string(), Some(Uuid::new_v4().to_string()))
+            // .basic_auth(Uuid::new_v4().to_string(), Some(Uuid::new_v4().to_string()))
+            // .basic_auth(username, Some(password)) // no tuple unpacking in rust!
+            .basic_auth(&self.test_user.username, Some(&self.test_user.password))
             .json(&body)
             .send()
             .await
@@ -221,10 +290,16 @@ pub async fn spawn_app() -> TestApp {
     let pool = get_connection_pool(&cfg.database); // can be done before or after spawn, apparently
     tokio::spawn(app.run_until_stopped());
 
-    TestApp {
+    let test_user = TestUser::generate();
+
+    let test_app = TestApp {
         addr,
         port,
         pool,
         email_server,
-    }
+        test_user,
+    };
+    // add_test_user(&test_app.pool).await;
+    test_app.test_user.store(&test_app.pool).await;
+    test_app
 }
