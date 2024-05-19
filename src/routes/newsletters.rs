@@ -20,6 +20,7 @@ use secrecy::ExposeSecret;
 use secrecy::Secret;
 use serde::Deserialize;
 use sqlx::PgPool;
+use tracing::Instrument;
 use uuid::Uuid;
 
 use super::error_chain_fmt;
@@ -130,6 +131,53 @@ fn basic_authentication(headers: &HeaderMap) -> Result<Credentials, anyhow::Erro
     Ok(Credentials { username, password })
 }
 
+async fn get_stored_credentials(
+    username: String,
+    pool: &PgPool,
+    // returning `Record` is not allowed, unfortunately...
+) -> Result<(Uuid, Secret<String>), PublishError> {
+    let row = sqlx::query!(
+        "
+        SELECT user_id, password_hash -- , salt
+        FROM users
+        WHERE username = $1
+        -- AND password_hash = $2
+    ",
+        username,
+        // format!("{password_hash:x}"), // GenericArray -> hexadecimal
+    )
+    .fetch_optional(pool)
+    .await
+    .context("No user with the supplied username was found in users table")
+    // note: the book just uses `map` to unpack the fields from within the `Some`, thus returning a
+    // `Result<Option<(...)>>`. to streamline things, i choose to convert `None` to `Err`, and lift
+    // from `Some`
+    .map_err(PublishError::UnexpectedError)?
+    .ok_or_else(|| anyhow::anyhow!("Invalid credentials"))?;
+    Ok((row.user_id, Secret::new(row.password_hash)))
+}
+
+/// Note that verification is a CPU-bound operation that is fairly slow (by
+/// design)
+// up to 0.5 s (!)
+// TEST_LOG=true cargo test confirmed | grep VERIF | bunyan
+fn verify_password(
+    supplied_password: Secret<String>,
+    stored_password: Secret<String>,
+) -> Result<(), PublishError> {
+    let stored_password = &PasswordHash::new(stored_password.expose_secret())
+        .context("Failed to read stored PHC string")
+        .map_err(PublishError::UnexpectedError)?;
+    Argon2::default()
+        .verify_password(
+            supplied_password.expose_secret().as_bytes(),
+            stored_password,
+        )
+        .context("Invalid password")
+        .map_err(PublishError::AuthError)?;
+    Ok(())
+}
+
 // on salting: "For each user, we generate a unique random string (salt), which
 // is prepended to the user password before generating the hash." The salt does
 // not need to be hashed, just random.
@@ -150,25 +198,12 @@ fn basic_authentication(headers: &HeaderMap) -> Result<Credentials, anyhow::Erro
 // $argon2id$v=19$m=65536,t=2,p=1
 // $gZiV/M1gPc22ElAH/Jh1Hw
 // $CWOrkoo7oJBQ/iyh7uJ0LO2aLEfrHwTWllSAxT0zRno
+#[tracing::instrument(name = "Validating credentials", skip(creds, pool))]
 async fn validate_credentials(
     creds: Credentials,
     pool: &PgPool,
 ) -> Result<Uuid, PublishError> {
-    let stored = sqlx::query!(
-        "
-        SELECT user_id, password_hash -- , salt
-        FROM users
-        WHERE username = $1
-        -- AND password_hash = $2
-    ",
-        creds.username,
-        // format!("{password_hash:x}"), // GenericArray -> hexadecimal
-    )
-    .fetch_optional(pool)
-    .await
-    .context("No user with the supplied username was found in users table")
-    .map_err(PublishError::UnexpectedError)?
-    .ok_or_else(|| anyhow::anyhow!("Invalid credentials"))?;
+    let (user_id, stored_password) = get_stored_credentials(creds.username, pool).await?;
 
     // use sha3::Digest;
     // use sha3::Sha3_256;
@@ -190,16 +225,44 @@ async fn validate_credentials(
     // as_bytes())).unwrap(), )
     // .unwrap();
 
-    let hashed_pw = PasswordHash::new(&stored.password_hash)
-        .context("Failed to read PHC string")
-        .map_err(PublishError::UnexpectedError)?;
+    // "[a] future progresses from the previous .await to the next one and then
+    // yields control back to the executor."
+    //
+    // "async runtimes make progress concurrently on multiple I/O-bound tasks by
+    // continuously parking and resuming each of them." generally, any task that
+    // takes more than 1 ms can be said to be CPU-bound, and should be handed
+    // off to a separate threadpool (that does -not- yield)
 
-    Argon2::default()
-        .verify_password(creds.password.expose_secret().as_bytes(), &hashed_pw)
-        .context("Invalid password")
-        .map_err(PublishError::AuthError)?;
+    tokio::task::spawn_blocking(move || {
+        tracing::info_span!("Verifying password hash").in_scope(|| {
+            // 1. `verify_password` strictly requires both args to be refs (`to_owned` won't
+            //    work)
+            // 2. `move`ing refs into a thread is forbidden by the borrow checker; a thread
+            //    spawned by `spawn_blocking` is assumed to last for the duration of the
+            //    entire program
+            // 3. we want to be able catch `Err` from `PasswordHash::new`; this is not
+            //    trivial from within a thread
+            //
+            // instead, only owned data should be moved into the thread
 
-    Ok(stored.user_id)
+            // Argon2::default().verify_password(
+            //     creds.password.expose_secret().as_bytes(),
+            //     &PasswordHash::new(stored_password.expose_secret())
+            //         .context("Failed to read stored PHC string")
+            //         .map_err(PublishError::UnexpectedError)
+            //         .unwrap(),
+            // )
+
+            verify_password(creds.password, stored_password)
+        })
+    })
+    .await
+    .context("Failed to spawn blocking thread")
+    .map_err(PublishError::UnexpectedError)?
+    .context("Invalid password")
+    .map_err(PublishError::AuthError)?;
+
+    Ok(user_id)
 }
 
 #[tracing::instrument(

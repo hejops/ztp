@@ -74,7 +74,7 @@ pub struct ConfirmationLinks {
 pub struct TestUser {
     user_id: Uuid,
     username: String,
-    /// Unhashed (raw) in this struct, but hashed when added to db
+    /// Unhashed (raw) in this struct, but hashed as PHC when added to db
     password: String,
 }
 
@@ -107,6 +107,8 @@ impl TestUser {
         // let password_hash = Sha3_256::digest(&self.password);
         // let password_hash = format!("{password_hash:x}");
 
+        // this PHC will include all params and the salt
+        // `default` does not adhere to OWASP recommendation (?)
         let password_hash = Argon2::default()
             .hash_password(
                 self.password.as_bytes(),
