@@ -9,18 +9,15 @@ use actix_web::HttpRequest;
 use actix_web::HttpResponse;
 use actix_web::ResponseError;
 use anyhow::Context;
-use argon2::password_hash::Salt;
 use argon2::Argon2;
 use argon2::PasswordHash;
-use argon2::PasswordHasher;
 use argon2::PasswordVerifier;
-use base64::engine::general_purpose;
 use base64::Engine;
 use secrecy::ExposeSecret;
 use secrecy::Secret;
 use serde::Deserialize;
 use sqlx::PgPool;
-use tracing::Instrument;
+use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 use super::error_chain_fmt;
@@ -233,34 +230,48 @@ async fn validate_credentials(
     // takes more than 1 ms can be said to be CPU-bound, and should be handed
     // off to a separate threadpool (that does -not- yield)
 
-    tokio::task::spawn_blocking(move || {
-        tracing::info_span!("Verifying password hash").in_scope(|| {
-            // 1. `verify_password` strictly requires both args to be refs (`to_owned` won't
-            //    work)
-            // 2. `move`ing refs into a thread is forbidden by the borrow checker; a thread
-            //    spawned by `spawn_blocking` is assumed to last for the duration of the
-            //    entire program
-            // 3. we want to be able catch `Err` from `PasswordHash::new`; this is not
-            //    trivial from within a thread
-            //
-            // instead, only owned data should be moved into the thread
+    /// Wrapper for `spawn_blocking` with `tracing`
+    pub fn spawn_blocking_with_tracing<F, R>(f: F) -> JoinHandle<R>
+    where
+        F: FnOnce() -> R + Send + 'static,
+        R: Send + 'static,
+    {
+        let span = tracing::Span::current();
 
-            // Argon2::default().verify_password(
-            //     creds.password.expose_secret().as_bytes(),
-            //     &PasswordHash::new(stored_password.expose_secret())
-            //         .context("Failed to read stored PHC string")
-            //         .map_err(PublishError::UnexpectedError)
-            //         .unwrap(),
-            // )
+        tokio::task::spawn_blocking(move || {
+            // tracing::info_span!("Verifying password hash").in_scope(|| {
+            span.in_scope(
+                // 1. `verify_password` strictly requires both args to be refs (`to_owned` won't
+                //    work)
+                // 2. `move`ing refs into a thread is forbidden by the borrow checker; a thread
+                //    spawned by `spawn_blocking` is assumed to last for the duration of the entire
+                //    program
+                // 3. we want to be able catch `Err` from `PasswordHash::new`; this is not trivial
+                //    from within a thread
+                //
+                // instead, only owned data should be moved into the thread
 
-            verify_password(creds.password, stored_password)
+                // Argon2::default().verify_password(
+                //     creds.password.expose_secret().as_bytes(),
+                //     &PasswordHash::new(stored_password.expose_secret())
+                //         .context("Failed to read stored PHC string")
+                //         .map_err(PublishError::UnexpectedError)
+                //         .unwrap(),
+                // )
+                f,
+            )
         })
-    })
-    .await
-    .context("Failed to spawn blocking thread")
-    .map_err(PublishError::UnexpectedError)?
-    .context("Invalid password")
-    .map_err(PublishError::AuthError)?;
+    }
+
+    // notice that there are 2 closures: the function (`verify_password`) is first
+    // placed in a tracing span, and this span is then placed in a blocking
+    // thread
+    spawn_blocking_with_tracing(move || verify_password(creds.password, stored_password))
+        .await
+        .context("Failed to spawn blocking thread")
+        .map_err(PublishError::UnexpectedError)?
+        .context("Invalid password")
+        .map_err(PublishError::AuthError)?;
 
     Ok(user_id)
 }
