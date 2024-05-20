@@ -73,7 +73,7 @@ pub struct ConfirmationLinks {
 /// At least one user is required to send newsletters.
 pub struct TestUser {
     user_id: Uuid,
-    username: String,
+    pub username: String,
     /// Unhashed (raw) in this struct, but hashed as PHC when added to db
     password: String,
 }
@@ -107,15 +107,27 @@ impl TestUser {
         // let password_hash = Sha3_256::digest(&self.password);
         // let password_hash = format!("{password_hash:x}");
 
-        // this PHC will include all params and the salt
-        // `default` does not adhere to OWASP recommendation (?)
-        let password_hash = Argon2::default()
-            .hash_password(
-                self.password.as_bytes(),
-                &SaltString::generate(&mut rand::thread_rng()),
-            )
-            .unwrap()
-            .to_string();
+        // this PHC will include all params and the salt. the `default` params should
+        // always adhere to the OWASP recommendation (19 MB as of 2024/05):
+        //
+        // https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html#argon2id
+        //
+        // but in the interest of reproducibility, we explicitly declare these params
+        // here, as well as in the dummy hash of `validate_credentials`
+        let password_hash = Argon2::new(
+            // default -- https://docs.rs/argon2/latest/src/argon2/algorithm.rs.html#50
+            argon2::Algorithm::Argon2id,
+            // https://docs.rs/argon2/latest/src/argon2/version.rs.html#17
+            argon2::Version::V0x13,
+            // https://docs.rs/argon2/latest/src/argon2/params.rs.html#40
+            argon2::Params::new(19456, 2, 1, None).unwrap(),
+        )
+        .hash_password(
+            self.password.as_bytes(),
+            &SaltString::generate(&mut rand::thread_rng()),
+        )
+        .unwrap()
+        .to_string();
 
         sqlx::query!(
             "

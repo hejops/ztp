@@ -201,7 +201,28 @@ async fn validate_credentials(
     creds: Credentials,
     pool: &PgPool,
 ) -> Result<Uuid, PublishError> {
-    let (user_id, stored_password) = get_stored_credentials(creds.username, pool).await?;
+    // let (user_id, stored_password) = get_stored_credentials(creds.username,
+    // pool).await?;
+
+    let (user_id, stored_password) = match get_stored_credentials(creds.username, pool).await {
+        Ok((i, p)) => (Some(i), p),
+        // Notice that returning early here skips the (slow) hash verification, leading to a 10x
+        // 'speedup'. This may be exploited for a timing attack, allowing attackers to
+        // perform user enumeration and determine which usernames are valid (and which
+        // aren't). To avoid this, use a fallback hash (which must be a valid PHC with the same
+        // params; otherwise verification will also be quick) to ensure constant computation time
+        // regardless of user validity.
+        Err(_) => (
+            None,
+            Secret::new(
+                // these argon2 params correspond with those declared in `TestUser.store`
+                "$argon2id$v=19$m=19456,t=2,p=1$\
+        gZiV/M1gPc22ElAH/Jh1Hw$\
+        CWOrkoo7oJBQ/iyh7uJ0LO2aLEfrHwTWllSAxT0zRno"
+                    .to_string(),
+            ),
+        ),
+    };
 
     // use sha3::Digest;
     // use sha3::Sha3_256;
@@ -274,7 +295,8 @@ async fn validate_credentials(
         .context("Invalid password")
         .map_err(PublishError::AuthError)?;
 
-    Ok(user_id)
+    // Ok(user_id)
+    user_id.ok_or_else(|| PublishError::AuthError(anyhow::anyhow!("Invalid username")))
 }
 
 #[tracing::instrument(

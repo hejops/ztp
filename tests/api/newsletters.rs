@@ -1,3 +1,4 @@
+use uuid::Uuid;
 use wiremock::matchers::any;
 use wiremock::matchers::method;
 use wiremock::matchers::path;
@@ -137,6 +138,63 @@ async fn auth_no_header() {
         .send()
         .await
         .unwrap();
+
+    assert_eq!(resp.status().as_u16(), 401); // unauthorized
+    assert_eq!(
+        resp.headers()["WWW-Authenticate"],
+        r#"Basic realm="publish""#,
+    );
+}
+
+#[tokio::test]
+async fn auth_user_not_found() {
+    let app = spawn_app().await;
+
+    let contents = serde_json::json!({
+        "title": "foo",
+        "content": {
+            "text": "bar",
+            "html": "<p>baz</p>",
+        }
+    });
+
+    let resp = reqwest::Client::new()
+        .post(format!("{}/newsletters", app.addr))
+        // random creds
+        .basic_auth(Uuid::new_v4().to_string(), Some(Uuid::new_v4().to_string()))
+        .json(&contents)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status().as_u16(), 401); // unauthorized
+    assert_eq!(
+        resp.headers()["WWW-Authenticate"],
+        r#"Basic realm="publish""#,
+    );
+}
+
+#[tokio::test]
+async fn auth_user_found_but_wrong_password() {
+    let app = spawn_app().await;
+
+    let contents = serde_json::json!({
+        "title": "foo",
+        "content": {
+            "text": "bar",
+            "html": "<p>baz</p>",
+        }
+    });
+
+    let resp = reqwest::Client::new()
+        .post(format!("{}/newsletters", app.addr))
+        // random password
+        .basic_auth(app.test_user.username, Some(Uuid::new_v4().to_string()))
+        .json(&contents)
+        .send()
+        .await
+        .unwrap();
+
     assert_eq!(resp.status().as_u16(), 401); // unauthorized
     assert_eq!(
         resp.headers()["WWW-Authenticate"],
