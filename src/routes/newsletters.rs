@@ -73,7 +73,7 @@ impl ResponseError for PublishError {
     fn error_response(&self) -> HttpResponse<actix_web::body::BoxBody> {
         match self {
             Self::AuthError(_) => {
-                let mut resp = HttpResponse::new(StatusCode::UNAUTHORIZED);
+                let mut resp = HttpResponse::new(StatusCode::UNAUTHORIZED); // 401
                 let header_value = HeaderValue::from_str(r#"Basic realm="publish""#).unwrap();
                 resp.headers_mut()
                     .insert(header::WWW_AUTHENTICATE, header_value);
@@ -145,12 +145,13 @@ async fn get_stored_credentials(
     )
     .fetch_optional(pool)
     .await
-    .context("No user with the supplied username was found in users table")
-    // note: the book just uses `map` to unpack the fields from within the `Some`, thus returning a
-    // `Result<Option<(...)>>`. to streamline things, i choose to convert `None` to `Err`, and lift
-    // from `Some`
+    .context("Failed to query db")
     .map_err(PublishError::UnexpectedError)?
-    .ok_or_else(|| anyhow::anyhow!("Invalid credentials"))?;
+    // note: the book just uses `map` to unpack the fields from within the `Some`, thus returning a
+    // `Result<Option<(...)>>`. to streamline things, i use `map_err` (again) to convert `Option` to
+    // `Result`, and lift the fields from `Some`
+    .context("No user with the supplied username was found in users table")
+    .map_err(PublishError::AuthError)?;
     Ok((row.user_id, Secret::new(row.password_hash)))
 }
 
