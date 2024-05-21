@@ -84,11 +84,23 @@ impl ResponseError for PublishError {
     }
 }
 
+// any API can expect to encounter 3 types of clients, each with different modes
+// of authentication:
+//
+// 1. another API (machine) -- request signing, mutual TLS, OAuth2, JWT
+// 2. another API (human) -- OAuth2 (scoped)
+// 3. browser (human) -- session-based authentication (login form), identity
+//    federation
+//
+// #3 will be our main target
+
 struct Credentials {
     username: String,
     password: Secret<String>,
 }
 
+/// Parse headers of a HTTP request. This does not actually validate any user
+/// credentials; for that, see `validate_credentials`.
 fn basic_authentication(headers: &HeaderMap) -> Result<Credentials, anyhow::Error> {
     // authentication methods fall in three categories: passwords / objects /
     // biometrics. because there are drawbacks associated with each, multi-factor
@@ -196,6 +208,8 @@ fn verify_password(
 // $argon2id$v=19$m=65536,t=2,p=1
 // $gZiV/M1gPc22ElAH/Jh1Hw
 // $CWOrkoo7oJBQ/iyh7uJ0LO2aLEfrHwTWllSAxT0zRno
+/// Validate supplied credentials (username/password) by checking against the
+/// `users` table in db, returning the user's `Uuid` on success.
 #[tracing::instrument(name = "Validating credentials", skip(creds, pool))]
 async fn validate_credentials(
     creds: Credentials,

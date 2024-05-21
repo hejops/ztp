@@ -14,6 +14,9 @@ use crate::configuration::Settings;
 use crate::email_client::EmailClient;
 use crate::routes::confirm;
 use crate::routes::health_check;
+use crate::routes::home;
+use crate::routes::login;
+use crate::routes::login_form;
 use crate::routes::publish;
 use crate::routes::subscribe;
 
@@ -140,6 +143,9 @@ pub fn run(
         App::new()
             // .wrap(Logger::default())
             .wrap(TracingLogger::default()) // wrap the whole app in tracing middleware
+            .route("/", web::get().to(home))
+            .route("/login", web::get().to(login_form))
+            .route("/login", web::post().to(login))
             .route("/health_check", web::get().to(health_check))
             // remember, the guard must match the client's request type
             .route("/subscriptions", web::post().to(subscribe))

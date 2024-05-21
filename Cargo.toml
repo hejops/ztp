@@ -73,7 +73,7 @@ features = [
   "chrono",               # timestamptz -> DateTime<T>
   "macros",               # sqlx::query[_as]!
   "migrate",              # test migrations
-  "postgres",             # non-standard SQL types
+  "postgres",             # PG-specific non-standard SQL types
   "runtime-tokio-rustls",
   "uuid",                 # unique ids for entries
 ]
