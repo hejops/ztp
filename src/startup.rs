@@ -96,6 +96,10 @@ pub fn get_connection_pool(db_cfg: &DatabaseSettings) -> PgPool {
 /// conflict with one another when passed around by `Data`)
 pub struct AppBaseUrl(pub String);
 
+/// Message authentication guarantees that the message has not been modified in
+/// transit, and allows identity of the sender to be verified. We use HMAC
+/// (specified in RFC2104).
+#[derive(Clone)]
 pub struct HmacSecret(pub Secret<String>);
 
 /// The server is not responsible for binding to an address, it only listens to

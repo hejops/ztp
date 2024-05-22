@@ -44,43 +44,12 @@ impl Debug for LoginError {
     }
 }
 
-// impl ResponseError for LoginError {
-//     fn status_code(&self) -> actix_web::http::StatusCode {
-//         // match self {
-//         //     Self::AuthError(_) => StatusCode::UNAUTHORIZED,
-//         //     Self::UnexpectedError(_) => StatusCode::INTERNAL_SERVER_ERROR,
-//         // }
-//
-//         // always redirect to /login, regardless of error type
-//         StatusCode::SEE_OTHER
-//     }
-//
-//     fn error_response(&self) -> HttpResponse<actix_web::body::BoxBody> {
-//         let encoded_error = urlencoding::Encoded::new(self.to_string());
-//         let query_string = format!("error={encoded_error}");
-//         let secret = todo!();
-//         let hmac_tag = {
-//             let mut mac =
-// Hmac::<sha2::Sha256>::new_from_slice(secret).unwrap();             // mac.up
-//         };
-//         HttpResponse::build(self.status_code())
-//             .insert_header((
-//                 LOCATION,
-//                 // "/login",
-//                 // pass the error as a url param, e.g. http://localhost:8000/login?error=You%20are...
-//                 // format!("/login?error={}", encoded_error),
-//                 format!("/login?{query_string}&tag={hmac_tag:x}"),
-//             ))
-//             .finish()
-//     }
-// }
-
 /// `POST` endpoint (`login`)
 ///
 /// Triggered after submitting valid credentials on `/login`.
 ///
-/// On successful validation, redirect to `/`, otherwise reload `/login` with
-/// error message.
+/// On successful validation, `GET /`, otherwise `GET /login` again with
+/// error message (and HMAC tag) injected as params.
 #[tracing::instrument(
     name = "Validating credentials for login",
     skip(form, pool, secret),
@@ -99,7 +68,8 @@ pub async fn login(
     // ) -> HttpResponse {
     //
     // `InternalError` combines `ResponseError` (thus propagating the error context upstream to the
-    // middleware chain) and `HttpResponse` (triggering the correct redirect).
+    // middleware chain on failure) and `HttpResponse` (triggering the correct redirects on both
+    // success and failure).
 ) -> Result<HttpResponse, InternalError<LoginError>> {
     let creds = Credentials {
         username: form.0.username,
@@ -107,6 +77,9 @@ pub async fn login(
     };
 
     tracing::Span::current().record("username", tracing::field::display(&creds.username));
+
+    // previously, we just returned early on validation failure, without causing a
+    // reload (/error message)
 
     // let user_id = validate_credentials(creds, &pool)
     //     .await
@@ -140,16 +113,20 @@ pub async fn login(
                 AuthError::UnexpectedError(_) => LoginError::UnexpectedError(e.into()),
             };
             let encoded_error = urlencoding::Encoded::new(e.to_string());
-            let query_string = format!("error={encoded_error}");
+            let error = format!("error_msg={encoded_error}");
+
             let secret = secret.0.expose_secret().as_bytes();
+            // byte slice encoded as hex string; this must be decoded on reload
             let hmac_tag = {
                 let mut mac = Hmac::<sha2::Sha256>::new_from_slice(secret).unwrap();
-                mac.update(query_string.as_bytes());
+                mac.update(error.as_bytes());
                 mac.finalize().into_bytes()
             };
 
+            // http://localhost:8000/login?error=You%20are%20not...&tag=dfe219b336b...
+
             let resp = HttpResponse::SeeOther()
-                .insert_header((LOCATION, format!("/login?{query_string}&tag={hmac_tag:x}")))
+                .insert_header((LOCATION, format!("/login?{error}&tag={hmac_tag:x}")))
                 .finish();
 
             Err(InternalError::from_response(e, resp))
