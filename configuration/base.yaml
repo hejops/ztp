@@ -11,7 +11,10 @@
 application:
   # host: "127.0.0.1"
   port: 8000
+  # TODO: `APP_APPLICATION__HMAC_SECRET`
+  hmac_secret: "long-and-very-secret-random-key-needed-to-verify-message-integrity"
 
+# [...]
 # identical to env, used to construct the db connection string, i.e.
 # "postgres://postgres:password@localhost:5432/newsletter"
 database:

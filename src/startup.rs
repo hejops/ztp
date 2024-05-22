@@ -5,6 +5,7 @@ use actix_web::web;
 use actix_web::web::Data;
 use actix_web::App;
 use actix_web::HttpServer;
+use secrecy::Secret;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
 use tracing_actix_web::TracingLogger;
@@ -69,7 +70,13 @@ impl Application {
             timeout,
         );
 
-        let server = run(listener, pool, email_client, cfg.application.base_url)?;
+        let server = run(
+            listener,
+            pool,
+            email_client,
+            cfg.application.base_url,
+            cfg.application.hmac_secret,
+        )?;
 
         Ok(Self { port, server })
     }
@@ -85,9 +92,11 @@ pub fn get_connection_pool(db_cfg: &DatabaseSettings) -> PgPool {
     PgPoolOptions::new().connect_lazy_with(db_cfg.connection())
 }
 
-/// Wrapper for top-level application base_url (because raw `String` cannot be
-/// passed around by `Data` (?))
+/// Wrapper for top-level application `base_url` (because raw `String`s may
+/// conflict with one another when passed around by `Data`)
 pub struct AppBaseUrl(pub String);
+
+pub struct HmacSecret(pub Secret<String>);
 
 /// The server is not responsible for binding to an address, it only listens to
 /// an already bound address.
@@ -101,6 +110,7 @@ pub fn run(
     pool: PgPool,
     email_client: EmailClient,
     base_url: String,
+    hmac_secret: Secret<String>,
 ) -> Result<Server, std::io::Error> {
     // email newsletter (e.g. MailChimp)
 
@@ -159,6 +169,7 @@ pub fn run(
             .app_data(email_client.clone())
             // .app_data(base_url.clone())
             .app_data(Data::new(AppBaseUrl(base_url.clone())))
+            .app_data(Data::new(HmacSecret(hmac_secret.clone())))
 
         // .route("/", web::get().to(greet))
         //

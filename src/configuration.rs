@@ -37,6 +37,9 @@ pub struct ApplicationSettings {
     /// Either `localhost`, or whatever is supplied by digitalocean (via env
     /// variable)
     pub base_url: String,
+
+    /// Required mainly for safe redirects on unsuccessful login
+    pub hmac_secret: Secret<String>,
 }
 
 /// Database configuration

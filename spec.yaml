@@ -90,6 +90,7 @@ services:
       - key: APP_APPLICATION__BASE_URL
         scope: RUN_TIME
         value: ${APP_URL}
+      # TODO: `APP_APPLICATION__HMAC_SECRET`
 
 databases:
   # note: init'ing a db takes about 5-10 mins, has no logs

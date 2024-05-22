@@ -23,7 +23,8 @@ pub struct Credentials {
     pub password: Secret<String>,
 }
 
-#[derive(thiserror::Error, Debug)]
+/// Derived from `PublishError` (which was written first)
+#[derive(thiserror::Error, Debug)] // we use the default Debug, for some reason
 pub enum AuthError {
     #[error("Invalid credentials")]
     InvalidCredentials(#[source] anyhow::Error),
@@ -95,7 +96,8 @@ fn verify_password(
 // single string
 //
 /// Validate supplied credentials (username/password) by checking against the
-/// `users` table in db, returning the user's `Uuid` on success.
+/// `users` table in db, returning the user's `Uuid` on success. User
+/// enumeration is protected against.
 #[tracing::instrument(name = "Validating credentials", skip(creds, pool))]
 pub async fn validate_credentials(
     creds: Credentials,

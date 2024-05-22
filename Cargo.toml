@@ -39,6 +39,8 @@ chrono = { version = "0.4.38", features = ["clock"] }
 claims = "0.7.1"
 config = "0.14.0"
 fake = "2.9.2"
+hmac = { version = "0.12.1", features = ["std"] }
+htmlescape = "0.3.1"
 linkify = "0.10.0"
 once_cell = "1.19.0"
 quickcheck = "1.0.3"
@@ -52,6 +54,7 @@ secrecy = { version = "0.8.0", features = ["serde"] }
 serde = { version = "1.0.198", features = ["derive"] }
 serde-aux = "4.5.0"
 serde_json = "1.0.116"
+sha2 = "0.10.8"
 # sha3 = "0.10.8"
 tera = "1.19.1"
 thiserror = "1.0.60"
@@ -62,6 +65,7 @@ tracing-bunyan-formatter = "0.3.9"
 tracing-log = "0.2.0"
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 unicode-segmentation = "1.11.0"
+urlencoding = "2.1.3"
 uuid = { version = "1.8.0", features = ["v4"] }
 validator = "0.18.1"
 wiremock = "0.6.0"
