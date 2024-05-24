@@ -1,41 +1,38 @@
+use actix_web::cookie::Cookie;
 use actix_web::http::header::ContentType;
-use actix_web::web;
 use actix_web::HttpRequest;
 use actix_web::HttpResponse;
-use hmac::Hmac;
-use hmac::Mac;
-use secrecy::ExposeSecret;
-use serde::Deserialize;
+use actix_web_flash_messages::IncomingFlashMessages;
+use actix_web_flash_messages::Level;
 
-use crate::startup::HmacSecret;
-
-#[derive(Deserialize)]
-pub struct QueryParams {
-    /// In the interest of clarity, `error_msg` is used over `error`
-    error_msg: String,
-
-    /// Byte slice encoded as hex string
-    tag: String,
-}
-
-impl QueryParams {
-    /// Construct a HMAC instance and use it to verify `secret`
-    fn verify(
-        self,
-        supplied_secret: &HmacSecret,
-    ) -> Result<String, anyhow::Error> {
-        let tag = hex::decode(self.tag)?;
-        // see `login`
-        let encoded_error = urlencoding::Encoded::new(&self.error_msg);
-        let query_string = format!("error_msg={encoded_error}");
-
-        let mut mac =
-            Hmac::<sha2::Sha256>::new_from_slice(supplied_secret.0.expose_secret().as_bytes())?;
-        mac.update(query_string.as_bytes());
-        mac.verify_slice(&tag)?;
-        Ok(self.error_msg)
-    }
-}
+// #[derive(Deserialize)]
+// pub struct QueryParams {
+//     /// In the interest of clarity, `error_msg` is used over `error`
+//     error_msg: String,
+//
+//     /// Byte slice encoded as hex string
+//     tag: String,
+// }
+//
+// impl QueryParams {
+//     /// Construct a HMAC instance and use it to verify `secret`
+//     fn verify(
+//         self,
+//         supplied_secret: &HmacSecret,
+//     ) -> Result<String, anyhow::Error> {
+//         let tag = hex::decode(self.tag)?;
+//         // see `login`
+//         let encoded_error = urlencoding::Encoded::new(&self.error_msg);
+//         let query_string = format!("error_msg={encoded_error}");
+//
+//         let mut mac =
+//
+// Hmac::<sha2::Sha256>::new_from_slice(supplied_secret.0.expose_secret().
+// as_bytes())?;         mac.update(query_string.as_bytes());
+//         mac.verify_slice(&tag)?;
+//         Ok(self.error_msg)
+//     }
+// }
 
 /// `GET` endpoint (`login`)
 ///
@@ -48,7 +45,8 @@ impl QueryParams {
 pub async fn login_form(
     // query: Option<web::Query<QueryParams>>,
     // secret: web::Data<HmacSecret>,
-    request: HttpRequest,
+    // request: HttpRequest,
+    flash_messages: IncomingFlashMessages,
 ) -> HttpResponse {
     // let error_msg = match query {
     //     // no params, or failed to deserialize, e.g. http://localhost:8000/login?error_msg=foo
@@ -79,13 +77,23 @@ pub async fn login_form(
     // let body = include_str!("./login.html"); // static html
 
     // previously, the outcome of `POST /login` was stored in url params, which were
-    // then decoded here. this is unnecessary if we store this outcome in a
+    // then decoded here. this becomes unnecessary if the outcome is stored in a
     // cookie
+    //
+    // generally, it is harder to perform XSS via cookies, but we must still guard
+    // against tampering, sniffing and JavaScript (lol)
 
-    let error_msg = match request.cookie("_flash") {
-        None => "".to_owned(),
-        Some(error_msg) => format!("<p><i>{}</i></p>", error_msg.value()),
-    };
+    // let error_msg = match request.cookie("_flash") {
+    //     None => "".to_owned(),
+    //     Some(error_msg) => format!("<p><i>{}</i></p>", error_msg.value()),
+    // };
+
+    let mut error_msg = String::new();
+    for msg in flash_messages.iter().filter(|m| m.level() == Level::Error) {
+        // the book calls `writeln!(String)`, which is no longer allowed?
+        // writeln!(error_html, "<p><i>{}</i></p>", m.content()).unwrap();
+        error_msg.push_str(&format!("<p><i>{}</i></p>\n", msg.content()))
+    }
 
     let body = format!(
         r#"
@@ -120,5 +128,14 @@ pub async fn login_form(
 
     HttpResponse::Ok()
         .content_type(ContentType::html())
+        // clear the cookie from `login`
+        // .cookie(Cookie::build("_flash", "").max_age(Duration::ZERO).finish())
         .body(body)
+
+    // let mut resp = HttpResponse::Ok()
+    //     .content_type(ContentType::html())
+    //     .body(body);
+    // // `add_removal_cookie` is more explicit that we are removing the cookie
+    // resp.add_removal_cookie(&Cookie::new("_flash", "")).unwrap();
+    // resp
 }

@@ -1,10 +1,14 @@
 use std::net::TcpListener;
 
+use actix_web::cookie::Key;
 use actix_web::dev::Server;
 use actix_web::web;
 use actix_web::web::Data;
 use actix_web::App;
 use actix_web::HttpServer;
+use actix_web_flash_messages::storage::CookieMessageStore;
+use actix_web_flash_messages::FlashMessagesFramework;
+use secrecy::ExposeSecret;
 use secrecy::Secret;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
@@ -144,6 +148,9 @@ pub fn run(
     // (for wrapping arbitrary types)
     let pool = web::Data::new(pool);
     let email_client = web::Data::new(email_client);
+    let cookie_store =
+        CookieMessageStore::builder(Key::from(hmac_secret.expose_secret().as_bytes())).build();
+    let msg_framework = FlashMessagesFramework::builder(cookie_store).build();
 
     // note the closure; "`actix-web` will spin up a worker process for each
     // available core on your machine. Each worker runs its own copy of the
@@ -157,6 +164,7 @@ pub fn run(
         App::new()
             // .wrap(Logger::default())
             .wrap(TracingLogger::default()) // wrap the whole app in tracing middleware
+            .wrap(msg_framework.clone()) // like tracing for the browser
             .route("/", web::get().to(home))
             .route("/login", web::get().to(login_form))
             .route("/login", web::post().to(login))

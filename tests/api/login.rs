@@ -17,11 +17,18 @@ async fn no_cookies() {
     // }", cookies); assert!(cookies.contains(&
     // reqwest::header::HeaderValue::from_str("_foo").unwrap()));
 
-    let cookie = resp.cookies().find(|c| c.name() == "_flash").unwrap();
-    // println!("{:?}", cookie);
-    assert_eq!(cookie.value(), "You are not authorized to view this page.");
+    // cookie setting/removal is handled as flash messages; we don't have a way to
+    // test it
+
+    // let cookie = resp.cookies().find(|c| c.name() == "_flash").unwrap();
+    // // println!("{:?}", cookie);
+    // assert_eq!(cookie.value(), "You are not authorized to view this page.");
 
     let html = app.get_login_html().await;
     // println!("{}", html);
     assert!(html.contains("<p><i>You are not authorized to view this page.</i></p>"));
+
+    // error should not persist on reload
+    let html = app.get_login_html().await;
+    assert!(!html.contains("<p><i>You are not authorized to view this page.</i></p>"));
 }

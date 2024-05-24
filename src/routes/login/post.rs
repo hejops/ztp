@@ -5,6 +5,7 @@ use actix_web::error::InternalError;
 use actix_web::http::header::LOCATION;
 use actix_web::web;
 use actix_web::HttpResponse;
+use actix_web_flash_messages::FlashMessage;
 use secrecy::Secret;
 use serde::Deserialize;
 use sqlx::PgPool;
@@ -109,6 +110,7 @@ pub async fn login(
                     .finish(),
             )
         }
+
         Err(e) => {
             let e = match e {
                 AuthError::InvalidCredentials(_) => LoginError::AuthError(e.into()),
@@ -131,11 +133,19 @@ pub async fn login(
             // let location = format!("/login?{error}&tag={hmac_tag:x}");
             let location = "/login".to_owned();
 
+            // "Session cookies are stored in memory - they are deleted when the session
+            // ends (i.e. the browser is closed). Persistent cookies, instead,
+            // are saved to disk and will still be there when you re-open the
+            // browser."
+
             let resp = HttpResponse::SeeOther()
                 .insert_header((LOCATION, location))
                 // .insert_header(("Set-Cookie", format!("_flash={e}")))
-                .cookie(Cookie::new("_flash", e.to_string()))
+                // .cookie(Cookie::new("_flash", e.to_string()))
                 .finish();
+
+            // supersedes manual setting of cookie!
+            FlashMessage::error(e.to_string()).send();
 
             Err(InternalError::from_response(e, resp))
         }
