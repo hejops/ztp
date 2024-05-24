@@ -1,12 +1,10 @@
 use std::fmt::Debug;
 
+use actix_web::cookie::Cookie;
 use actix_web::error::InternalError;
 use actix_web::http::header::LOCATION;
 use actix_web::web;
 use actix_web::HttpResponse;
-use hmac::Hmac;
-use hmac::Mac;
-use secrecy::ExposeSecret;
 use secrecy::Secret;
 use serde::Deserialize;
 use sqlx::PgPool;
@@ -15,7 +13,6 @@ use crate::authentication::validate_credentials;
 use crate::authentication::AuthError;
 use crate::authentication::Credentials;
 use crate::routes::error_chain_fmt;
-use crate::startup::HmacSecret;
 
 /// Login credentials
 #[derive(Deserialize)]
@@ -50,9 +47,13 @@ impl Debug for LoginError {
 ///
 /// On successful validation, `GET /`, otherwise `GET /login` again with
 /// error message (and HMAC tag) injected as params.
+// note: since authentication is done entirely via url, and we don't store/record the login in any
+// meaningful way, "logging in" and revisiting the page with any params will still produce the same
+// error message. instead of messing with the url, this should be done by cookies which are issued
+// to clients
 #[tracing::instrument(
     name = "Validating credentials for login",
-    skip(form, pool, secret),
+    skip(form, pool),
     fields(
         username=tracing::field::Empty,
         user_id=tracing::field::Empty,
@@ -62,7 +63,7 @@ pub async fn login(
     form: web::Form<FormData>,
     pool: web::Data<PgPool>,
     // secret: web::Data<Secret<String>>,
-    secret: web::Data<HmacSecret>,
+    // secret: web::Data<HmacSecret>,
     // returning `Err(impl ResponseError)` is required for graceful exit
     // ) -> Result<HttpResponse, LoginError> {
     // ) -> HttpResponse {
@@ -102,6 +103,7 @@ pub async fn login(
             tracing::Span::current().record("user_id", tracing::field::display(user_id));
 
             Ok(
+                // 303
                 HttpResponse::SeeOther() // https://developer.mozilla.org/en-US/docs/Web/HTTP/Redirections#temporary_redirections
                     .insert_header((LOCATION, "/")) // replace the location with / (home), i.e. redirect
                     .finish(),
@@ -112,21 +114,27 @@ pub async fn login(
                 AuthError::InvalidCredentials(_) => LoginError::AuthError(e.into()),
                 AuthError::UnexpectedError(_) => LoginError::UnexpectedError(e.into()),
             };
-            let encoded_error = urlencoding::Encoded::new(e.to_string());
-            let error = format!("error_msg={encoded_error}");
 
-            let secret = secret.0.expose_secret().as_bytes();
-            // byte slice encoded as hex string; this must be decoded on reload
-            let hmac_tag = {
-                let mut mac = Hmac::<sha2::Sha256>::new_from_slice(secret).unwrap();
-                mac.update(error.as_bytes());
-                mac.finalize().into_bytes()
-            };
+            // we will soon move this to cookie header
+            // let encoded_error = urlencoding::Encoded::new(e.to_string());
+            // let error = format!("error_msg={encoded_error}");
+
+            // let secret = secret.0.expose_secret().as_bytes();
+            // // byte slice encoded as hex string; this must be decoded on reload
+            // let hmac_tag = {
+            //     let mut mac = Hmac::<sha2::Sha256>::new_from_slice(secret).unwrap();
+            //     mac.update(error.as_bytes());
+            //     mac.finalize().into_bytes()
+            // };
 
             // http://localhost:8000/login?error=You%20are%20not...&tag=dfe219b336b...
+            // let location = format!("/login?{error}&tag={hmac_tag:x}");
+            let location = "/login".to_owned();
 
             let resp = HttpResponse::SeeOther()
-                .insert_header((LOCATION, format!("/login?{error}&tag={hmac_tag:x}")))
+                .insert_header((LOCATION, location))
+                // .insert_header(("Set-Cookie", format!("_flash={e}")))
+                .cookie(Cookie::new("_flash", e.to_string()))
                 .finish();
 
             Err(InternalError::from_response(e, resp))

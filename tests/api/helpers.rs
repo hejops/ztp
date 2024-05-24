@@ -5,7 +5,10 @@ use linkify::Link;
 use linkify::LinkFinder;
 use linkify::LinkKind;
 use once_cell::sync::Lazy;
+use reqwest::redirect;
+use reqwest::Response;
 use reqwest::Url;
+use serde::Serialize;
 use serde_json::Value;
 use sqlx::Connection;
 use sqlx::Executor;
@@ -63,6 +66,10 @@ pub struct TestApp {
     // personally, i would've used a method for user-related stuff, but presumably keeping it as a
     // struct field makes creds easier to access, let's see...
     pub test_user: TestUser,
+    /// This is expected to set a cookie (depending on success/failure). For
+    /// this cookie to persist across more than one request, a persistent
+    /// `client` is required.
+    pub api_client: reqwest::Client,
 }
 
 pub struct ConfirmationLinks {
@@ -153,7 +160,8 @@ impl TestApp {
         &self,
         body: String,
     ) -> reqwest::Response {
-        reqwest::Client::new()
+        // reqwest::Client::new()
+        self.api_client
             .post(format!("{}/subscriptions", self.addr))
             .header("Content-Type", "application/x-www-form-urlencoded")
             .body(body)
@@ -167,12 +175,45 @@ impl TestApp {
         &self,
         body: serde_json::Value,
     ) -> reqwest::Response {
-        reqwest::Client::new()
+        // reqwest::Client::new()
+        self.api_client
             .post(format!("{}/newsletters", self.addr))
             // .basic_auth(Uuid::new_v4().to_string(), Some(Uuid::new_v4().to_string()))
             // .basic_auth(username, Some(password)) // no tuple unpacking in rust!
             .basic_auth(&self.test_user.username, Some(&self.test_user.password))
             .json(&body)
+            .send()
+            .await
+            .unwrap()
+    }
+
+    /// Get HTML to be inspected
+    pub async fn get_login_html(&self) -> String {
+        // reqwest::Client::new()
+        self.api_client
+            .get(format!("{}/login", self.addr))
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap()
+    }
+
+    /// By requesting `POST /login`, a cookie will be set (depending on
+    /// success/failure). For this cookie to persist across more than one
+    /// request in the same test, a persistent `client` is required.
+    pub async fn post_login<B>(
+        &self,
+        body: &B,
+    ) -> reqwest::Response
+    where
+        B: Serialize,
+    {
+        // reqwest::Client::builder()
+        self.api_client
+            .post(format!("{}/login", self.addr))
+            .form(body)
             .send()
             .await
             .unwrap()
@@ -306,14 +347,30 @@ pub async fn spawn_app() -> TestApp {
 
     let test_user = TestUser::generate();
 
+    let api_client = reqwest::Client::builder()
+        // don't redirect to `/`, so we can check that login returns 303
+        .redirect(redirect::Policy::none())
+        .cookie_store(true)
+        .build()
+        .unwrap();
+
     let test_app = TestApp {
         addr,
         port,
         pool,
         email_server,
         test_user,
+        api_client,
     };
     // add_test_user(&test_app.pool).await;
     test_app.test_user.store(&test_app.pool).await;
     test_app
+}
+
+pub async fn check_redirect(
+    resp: &Response,
+    location: &str,
+) {
+    assert_eq!(resp.status().as_u16(), 303);
+    assert_eq!(resp.headers().get("Location").unwrap(), location);
 }
