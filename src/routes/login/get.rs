@@ -34,7 +34,7 @@ use actix_web_flash_messages::Level;
 //     }
 // }
 
-/// `GET` endpoint (`login`)
+/// `GET /login`
 ///
 /// Requested with empty `query` by default (zero params), but may be requested
 /// (via redirect) with exactly two params (`error`, `tag`).

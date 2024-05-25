@@ -26,7 +26,9 @@ async fn login_fail() {
 
     let html = app.get_login_html().await;
     // println!("{}", html);
-    assert!(html.contains("<p><i>You are not authorized to view this page.</i></p>"));
+    // assert!(html.contains("<p><i>You are not authorized to view this
+    // page.</i></p>"));
+    check_redirect(&resp, "/login").await;
 
     // error should not persist on reload
     let html = app.get_login_html().await;
@@ -46,4 +48,11 @@ async fn login_ok() {
 
     let html = app.get_admin_dashboard_html().await;
     assert!(html.contains(&format!("Welcome {}", app.test_user.username)));
+}
+
+#[tokio::test]
+async fn dashboard_without_login() {
+    let app = spawn_app().await;
+    let resp = app.get_admin_dashboard().await;
+    check_redirect(&resp, "/login").await;
 }

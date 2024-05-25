@@ -3,6 +3,7 @@ use std::fmt::Display;
 
 use actix_session::Session;
 use actix_web::http::header::ContentType;
+use actix_web::http::header::LOCATION;
 use actix_web::web;
 use actix_web::HttpResponse;
 use anyhow::Context;
@@ -34,13 +35,18 @@ async fn get_username(
     Ok(row.username)
 }
 
+/// `GET /admin/dashboard`
 pub async fn admin_dashboard(
     session: Session,
     pool: web::Data<PgPool>,
 ) -> Result<HttpResponse, actix_web::Error> {
     let username = match session.get::<Uuid>("user_id").map_err(error_500)? {
         Some(user_id) => get_username(user_id, &pool).await.map_err(error_500)?,
-        None => todo!(),
+        None => {
+            return Ok(HttpResponse::SeeOther()
+                .insert_header((LOCATION, "/login"))
+                .finish())
+        }
     };
 
     let body = format!(

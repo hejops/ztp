@@ -1,7 +1,7 @@
 use actix_web::http::header::ContentType;
 use actix_web::HttpResponse;
 
-/// `GET` endpoint (`home`)
+/// `GET /home`
 pub async fn home() -> HttpResponse {
     HttpResponse::Ok()
         // .finish()

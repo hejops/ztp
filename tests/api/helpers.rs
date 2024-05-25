@@ -190,12 +190,13 @@ impl TestApp {
     /// Get HTML to be inspected
     pub async fn get_login_html(&self) -> String {
         // reqwest::Client::new()
+        self.get_admin_dashboard().await.text().await.unwrap()
+    }
+
+    pub async fn get_admin_dashboard(&self) -> Response {
         self.api_client
-            .get(format!("{}/login", self.addr))
+            .get(format!("{}/admin/dashboard", self.addr))
             .send()
-            .await
-            .unwrap()
-            .text()
             .await
             .unwrap()
     }

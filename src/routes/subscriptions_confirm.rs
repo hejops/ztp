@@ -96,7 +96,8 @@ async fn confirm_subscriber(
     Ok(())
 }
 
-/// `GET` endpoint (`/subscriptions/confirm`)
+/// `GET /subscriptions/confirm`
+///
 /// Given a token in `params`, get the user id associated with it, then change
 /// the user's `status` to confirmed.
 ///

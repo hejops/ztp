@@ -122,6 +122,7 @@ fn basic_authentication(headers: &HeaderMap) -> Result<Credentials, anyhow::Erro
     Ok(Credentials { username, password })
 }
 
+/// `POST /newsletters`
 #[tracing::instrument(
     name = "Publishing newsletter",
     skip(body, pool, email_client, request),

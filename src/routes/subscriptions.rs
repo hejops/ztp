@@ -288,7 +288,7 @@ impl ResponseError for SubscribeError {
     }
 }
 
-/// `POST` endpoint (`subscribe`)
+/// `POST /subscribe`
 ///
 /// `form` is raw HTML, which is ultimately deserialized, in order to perform
 /// two SQL `INSERT` queries. Sends a confirmation email to the email address

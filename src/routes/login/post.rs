@@ -1,7 +1,5 @@
 use std::fmt::Debug;
 
-use actix_session::Session;
-use actix_web::cookie::Cookie;
 use actix_web::error::InternalError;
 use actix_web::http::header::LOCATION;
 use actix_web::web;
@@ -15,6 +13,7 @@ use crate::authentication::validate_credentials;
 use crate::authentication::AuthError;
 use crate::authentication::Credentials;
 use crate::routes::error_chain_fmt;
+use crate::session_state::TypedSession;
 
 /// Login credentials
 #[derive(Deserialize)]
@@ -59,7 +58,7 @@ impl Debug for LoginError {
 // session token acts as the key, while the value is the JSON representation of
 // the session state - the middleware takes care of (de)serialization.
 
-/// `POST` endpoint (`login`)
+/// `POST /login`
 ///
 /// Triggered after submitting valid credentials on `/login`.
 ///
@@ -82,7 +81,8 @@ pub async fn login(
     pool: web::Data<PgPool>,
     // secret: web::Data<Secret<String>>,
     // secret: web::Data<HmacSecret>,
-    session: Session,
+    // session: Session,
+    session: TypedSession,
     // returning `Err(impl ResponseError)` is required for graceful exit
     // ) -> Result<HttpResponse, LoginError> {
     // ) -> HttpResponse {
@@ -135,7 +135,8 @@ pub async fn login(
             session.renew();
             // session state is implicitly stored in redis when the response is returned
             session
-                .insert("user_id", user_id)
+                // .insert("user_id", user_id)
+                .insert_user_id(user_id)
                 .map_err(|e| login_redirect(LoginError::UnexpectedError(e.into())))?;
 
             Ok(
