@@ -9,7 +9,7 @@ use zero_to_prod::telemetry::init_subscriber;
 
 /// Initialise telemetry, load config, and start the server
 #[tokio::main] // requires tokio features: macros, rt-multi-thread
-async fn main() -> Result<(), std::io::Error> {
+async fn main() -> Result<(), anyhow::Error> {
     // RUST_LOG default is "error": https://docs.rs/env_logger/latest/env_logger/#enabling-logging
     // only logs at the specified level and higher are emitted
 

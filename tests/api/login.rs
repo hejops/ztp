@@ -2,7 +2,7 @@ use crate::helpers::check_redirect;
 use crate::helpers::spawn_app;
 
 #[tokio::test]
-async fn no_cookies() {
+async fn login_fail() {
     let app = spawn_app().await;
     let login_body = serde_json::json!({
         "username": "username",
@@ -31,4 +31,19 @@ async fn no_cookies() {
     // error should not persist on reload
     let html = app.get_login_html().await;
     assert!(!html.contains("<p><i>You are not authorized to view this page.</i></p>"));
+}
+
+#[tokio::test]
+async fn login_ok() {
+    let app = spawn_app().await;
+    let login_body = serde_json::json!({
+        "username": app.test_user.username,
+        "password": app.test_user.password,
+    });
+    let resp = app.post_login(&login_body).await;
+    // assert_eq!(resp.status().as_u16(), 303);
+    check_redirect(&resp, "/admin/dashboard").await;
+
+    let html = app.get_admin_dashboard_html().await;
+    assert!(html.contains(&format!("Welcome {}", app.test_user.username)));
 }

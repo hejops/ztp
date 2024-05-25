@@ -82,7 +82,7 @@ pub struct TestUser {
     user_id: Uuid,
     pub username: String,
     /// Unhashed (raw) in this struct, but hashed as PHC when added to db
-    password: String,
+    pub password: String,
 }
 
 // passwords must be stored after applying a deterministic, injective function
@@ -192,6 +192,17 @@ impl TestApp {
         // reqwest::Client::new()
         self.api_client
             .get(format!("{}/login", self.addr))
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap()
+    }
+
+    pub async fn get_admin_dashboard_html(&self) -> String {
+        self.api_client
+            .get(format!("{}/admin/dashboard", self.addr))
             .send()
             .await
             .unwrap()

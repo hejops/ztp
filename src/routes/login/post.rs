@@ -1,5 +1,6 @@
 use std::fmt::Debug;
 
+use actix_session::Session;
 use actix_web::cookie::Cookie;
 use actix_web::error::InternalError;
 use actix_web::http::header::LOCATION;
@@ -42,19 +43,35 @@ impl Debug for LoginError {
     }
 }
 
+// a stateless (client-only, db-free) extension to cookies are session tokens
+// (JWTs): "Users are asked to authenticate once, via a login form: if
+// successful, the server generates [...] an authenticated session token", which
+// is attached to all subsequent requests
+//
+// https://developer.okta.com/blog/2022/02/08/cookies-vs-tokens#what-you-should-know-about-cookies
+//
+// tokens must be random, unique and short-lived, and sessions must store some
+// state. while the short-lived nature of tokens is a poor fit for on-disk dbs
+// (e.g. Postgres) as they have no concept of row expiration, it is a good fit
+// for in-memory dbs (e.g. Redis)
+
+// we always work on a single session at a time, identified using its token. the
+// session token acts as the key, while the value is the JSON representation of
+// the session state - the middleware takes care of (de)serialization.
+
 /// `POST` endpoint (`login`)
 ///
 /// Triggered after submitting valid credentials on `/login`.
 ///
-/// On successful validation, `GET /`, otherwise `GET /login` again with
-/// error message (and HMAC tag) injected as params.
+/// On successful validation, `GET /admin/dashboard`, otherwise `GET /login`
+/// again with error message (and HMAC tag) injected as params.
 // note: since authentication is done entirely via url, and we don't store/record the login in any
 // meaningful way, "logging in" and revisiting the page with any params will still produce the same
 // error message. instead of messing with the url, this should be done by cookies which are issued
 // to clients
 #[tracing::instrument(
     name = "Validating credentials for login",
-    skip(form, pool),
+    skip(form, pool, session),
     fields(
         username=tracing::field::Empty,
         user_id=tracing::field::Empty,
@@ -65,6 +82,7 @@ pub async fn login(
     pool: web::Data<PgPool>,
     // secret: web::Data<Secret<String>>,
     // secret: web::Data<HmacSecret>,
+    session: Session,
     // returning `Err(impl ResponseError)` is required for graceful exit
     // ) -> Result<HttpResponse, LoginError> {
     // ) -> HttpResponse {
@@ -99,14 +117,31 @@ pub async fn login(
     //         .finish(),
     // );
 
+    fn login_redirect(err: LoginError) -> InternalError<LoginError> {
+        FlashMessage::error(err.to_string()).send();
+        let resp = HttpResponse::SeeOther()
+            .insert_header(("LOCATION", "/login"))
+            .finish();
+        InternalError::from_response(err, resp)
+    }
+
     match validate_credentials(creds, &pool).await {
         Ok(user_id) => {
             tracing::Span::current().record("user_id", tracing::field::display(user_id));
 
+            // clear session to mitigate session fixation
+            // https://en.wikipedia.org/wiki/Session_fixation
+            // https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html#renew-the-session-id-after-any-privilege-level-change
+            session.renew();
+            // session state is implicitly stored in redis when the response is returned
+            session
+                .insert("user_id", user_id)
+                .map_err(|e| login_redirect(LoginError::UnexpectedError(e.into())))?;
+
             Ok(
                 // 303
                 HttpResponse::SeeOther() // https://developer.mozilla.org/en-US/docs/Web/HTTP/Redirections#temporary_redirections
-                    .insert_header((LOCATION, "/")) // replace the location with / (home), i.e. redirect
+                    .insert_header((LOCATION, "/admin/dashboard")) // replace the location, i.e. redirect
                     .finish(),
             )
         }
@@ -117,7 +152,7 @@ pub async fn login(
                 AuthError::UnexpectedError(_) => LoginError::UnexpectedError(e.into()),
             };
 
-            // we will soon move this to cookie header
+            // we will soon move this from url params to cookie header
             // let encoded_error = urlencoding::Encoded::new(e.to_string());
             // let error = format!("error_msg={encoded_error}");
 
@@ -131,23 +166,25 @@ pub async fn login(
 
             // http://localhost:8000/login?error=You%20are%20not...&tag=dfe219b336b...
             // let location = format!("/login?{error}&tag={hmac_tag:x}");
-            let location = "/login".to_owned();
+            // let location = "/login".to_owned();
 
             // "Session cookies are stored in memory - they are deleted when the session
             // ends (i.e. the browser is closed). Persistent cookies, instead,
             // are saved to disk and will still be there when you re-open the
             // browser."
 
-            let resp = HttpResponse::SeeOther()
-                .insert_header((LOCATION, location))
-                // .insert_header(("Set-Cookie", format!("_flash={e}")))
-                // .cookie(Cookie::new("_flash", e.to_string()))
-                .finish();
+            // let resp = HttpResponse::SeeOther()
+            //     .insert_header((LOCATION, location))
+            //     // .insert_header(("Set-Cookie", format!("_flash={e}")))
+            //     // .cookie(Cookie::new("_flash", e.to_string()))
+            //     .finish();
+            //
+            // // supersedes manual setting of cookie!
+            // FlashMessage::error(e.to_string()).send();
+            //
+            // Err(InternalError::from_response(e, resp))
 
-            // supersedes manual setting of cookie!
-            FlashMessage::error(e.to_string()).send();
-
-            Err(InternalError::from_response(e, resp))
+            Err(login_redirect(e))
         }
     }
 }

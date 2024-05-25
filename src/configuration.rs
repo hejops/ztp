@@ -19,9 +19,14 @@ use crate::domain::SubscriberEmail;
 pub struct Settings {
     /// Database configuration
     pub database: DatabaseSettings,
+
     /// Server configuration
     pub application: ApplicationSettings,
+
     pub email_client: EmailClientSettings,
+
+    /// may be moved into a sub-struct
+    pub redis_uri: Secret<String>,
 }
 
 /// Server configuration

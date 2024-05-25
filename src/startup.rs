@@ -1,5 +1,7 @@
 use std::net::TcpListener;
 
+use actix_session::storage::RedisSessionStore;
+use actix_session::SessionMiddleware;
 use actix_web::cookie::Key;
 use actix_web::dev::Server;
 use actix_web::web;
@@ -17,6 +19,7 @@ use tracing_actix_web::TracingLogger;
 use crate::configuration::DatabaseSettings;
 use crate::configuration::Settings;
 use crate::email_client::EmailClient;
+use crate::routes::admin_dashboard;
 use crate::routes::confirm;
 use crate::routes::health_check;
 use crate::routes::home;
@@ -37,7 +40,7 @@ pub struct Application {
 
 impl Application {
     /// Wrapper over `startup::run` that builds a `Server`
-    pub async fn build(cfg: Settings) -> Result<Self, std::io::Error> {
+    pub async fn build(cfg: Settings) -> Result<Self, anyhow::Error> {
         // // hardcoded host (localhost), fixed port (8000)
         // let addr = format!("127.0.0.1:{}", cfg.application.port);
 
@@ -80,7 +83,9 @@ impl Application {
             email_client,
             cfg.application.base_url,
             cfg.application.hmac_secret,
-        )?;
+            cfg.redis_uri,
+        )
+        .await?;
 
         Ok(Self { port, server })
     }
@@ -112,14 +117,15 @@ pub struct HmacSecret(pub Secret<String>);
 /// Contains all API endpoints:
 /// `/health_check` (GET)
 /// `/subscriptions` (POST)
-pub fn run(
+pub async fn run(
     // address: &str, // fixed port
     listener: TcpListener,
     pool: PgPool,
     email_client: EmailClient,
     base_url: String,
     hmac_secret: Secret<String>,
-) -> Result<Server, std::io::Error> {
+    redis_uri: Secret<String>,
+) -> Result<Server, anyhow::Error> {
     // email newsletter (e.g. MailChimp)
 
     // before implementing any features, consider potential "user stories" that
@@ -144,13 +150,17 @@ pub fn run(
     // an `App` 'lives' in a `HttpServer`, and handles all request/response logic
     // via `route` endpoints
 
+    let secret_key = Key::from(hmac_secret.expose_secret().as_bytes());
+
+    let cookie_store = CookieMessageStore::builder(secret_key.clone()).build();
+    let msg_framework = FlashMessagesFramework::builder(cookie_store).build();
+
+    let redis_store = RedisSessionStore::new(redis_uri.expose_secret()).await?;
+
     // `Data` is externally an `Arc` (for sharing/cloning), internally a `HashMap`
     // (for wrapping arbitrary types)
     let pool = web::Data::new(pool);
     let email_client = web::Data::new(email_client);
-    let cookie_store =
-        CookieMessageStore::builder(Key::from(hmac_secret.expose_secret().as_bytes())).build();
-    let msg_framework = FlashMessagesFramework::builder(cookie_store).build();
 
     // note the closure; "`actix-web` will spin up a worker process for each
     // available core on your machine. Each worker runs its own copy of the
@@ -161,10 +171,17 @@ pub fn run(
         // essentially equivalent to a `match` block, where we try to exhaust a series
         // of routes (match arms)
 
+        // order is probably not significant, but the book declares wrappers, then
+        // routes, then app data
         App::new()
             // .wrap(Logger::default())
             .wrap(TracingLogger::default()) // wrap the whole app in tracing middleware
-            .wrap(msg_framework.clone()) // like tracing for the browser
+            .wrap(msg_framework.clone()) // like tracing, but for the browser
+            // .wrap(session_store.clone())
+            .wrap(SessionMiddleware::new(
+                redis_store.clone(),
+                secret_key.clone(),
+            ))
             .route("/", web::get().to(home))
             .route("/login", web::get().to(login_form))
             .route("/login", web::post().to(login))
@@ -173,6 +190,7 @@ pub fn run(
             .route("/subscriptions", web::post().to(subscribe))
             .route("/subscriptions/confirm", web::get().to(confirm))
             .route("/newsletters", web::post().to(publish))
+            .route("/admin/dashboard", web::get().to(admin_dashboard))
             // with `.app_data`, global state (e.g. db connection, http client(s)) is made available
             // to all endpoints, if specified as args. args passed must either implement
             // `Clone` or be wrapped with `web::Data`. the latter is preferred as -all-

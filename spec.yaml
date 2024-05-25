@@ -70,7 +70,7 @@ services:
     # note that reloading env vars requires the app to be destroyed (push won't
     # suffice)
     envs:
-      - key: APP_DATABASE__USERNAME
+      - key: APP_DATABASE__USERNAME # Settings.database.username
         scope: RUN_TIME
         value: ${db.USERNAME}
       - key: APP_DATABASE__PASSWORD
@@ -90,7 +90,11 @@ services:
       - key: APP_APPLICATION__BASE_URL
         scope: RUN_TIME
         value: ${APP_URL}
-      # TODO: `APP_APPLICATION__HMAC_SECRET`
+      # TODO: `APP_APPLICATION__HMAC_SECRET` (10.6.4.5)
+      # TODO: see 10.7.4.2
+      - key: APP_REDIS_URI
+        scope: RUN_TIME
+        value: ${APP_REDIS_URI}
 
 databases:
   # note: init'ing a db takes about 5-10 mins, has no logs
@@ -100,3 +104,5 @@ databases:
     size: db-s-dev-database
     # Postgres version
     version: "12"
+  # note: redis db can only be done via the GUI; see 10.7.4.2
+  # https://cloud.digitalocean.com/databases/new?engine=redis&i=5bcc51
