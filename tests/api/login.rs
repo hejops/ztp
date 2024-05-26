@@ -2,7 +2,7 @@ use crate::helpers::check_redirect;
 use crate::helpers::spawn_app;
 
 #[tokio::test]
-async fn login_fail() {
+async fn login_invalid() {
     let app = spawn_app().await;
     let login_body = serde_json::json!({
         "username": "username",
@@ -10,7 +10,7 @@ async fn login_fail() {
     });
     let resp = app.post_login(&login_body).await;
     assert_eq!(resp.status().as_u16(), 303);
-    check_redirect(&resp, "/login").await;
+    check_redirect(&resp, "/login");
 
     // let cookies: HashSet<_> =
     // resp.headers().get_all("Set-Cookie").into_iter().collect(); println!("{:?
@@ -24,11 +24,14 @@ async fn login_fail() {
     // // println!("{:?}", cookie);
     // assert_eq!(cookie.value(), "You are not authorized to view this page.");
 
-    let html = app.get_login_html().await;
+    // we no longer display error in html
+
+    // let html = app.get_login_html().await;
     // println!("{}", html);
     // assert!(html.contains("<p><i>You are not authorized to view this
     // page.</i></p>"));
-    check_redirect(&resp, "/login").await;
+
+    check_redirect(&resp, "/login");
 
     // error should not persist on reload
     let html = app.get_login_html().await;
@@ -44,7 +47,7 @@ async fn login_ok() {
     });
     let resp = app.post_login(&login_body).await;
     // assert_eq!(resp.status().as_u16(), 303);
-    check_redirect(&resp, "/admin/dashboard").await;
+    check_redirect(&resp, "/admin/dashboard");
 
     let html = app.get_admin_dashboard_html().await;
     assert!(html.contains(&format!("Welcome {}", app.test_user.username)));
@@ -54,5 +57,5 @@ async fn login_ok() {
 async fn dashboard_without_login() {
     let app = spawn_app().await;
     let resp = app.get_admin_dashboard().await;
-    check_redirect(&resp, "/login").await;
+    check_redirect(&resp, "/login");
 }

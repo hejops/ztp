@@ -23,6 +23,19 @@ use zero_to_prod::startup::Application;
 use zero_to_prod::telemetry::get_subscriber;
 use zero_to_prod::telemetry::init_subscriber;
 
+// ulimit (on open file descriptors) may cause some integration tests to fail
+// non-deterministically. to fix this, ulimit -n 8192
+// https://github.com/LukeMathWalker/zero-to-production/issues/51#issue-811998355
+
+// note: if redis not running, -all- tests will fail; i haven't pinpointed why
+// this is the case, but it probably has to do with TestApp or spawn_app
+
+// where to place tests:
+// 1. embedded (with #[cfg(test)]): good for unit testing, easy access to
+//    private objects, never exposed to users
+// 2. /tests dir: for integration testing
+// 3. doctests: (not discussed)
+
 /// Init a static subscriber using the `once_cell` crate; alternatives include
 /// `std::cell:OnceCell` and `lazy_static` (crate).
 // https://docs.rs/once_cell/latest/once_cell/#faq
@@ -57,20 +70,6 @@ static TRACING: Lazy<()> = Lazy::new(|| {
         }
     };
 });
-
-pub struct TestApp {
-    pub addr: String,
-    pub port: u16,
-    pub pool: PgPool,
-    pub email_server: MockServer,
-    // personally, i would've used a method for user-related stuff, but presumably keeping it as a
-    // struct field makes creds easier to access, let's see...
-    pub test_user: TestUser,
-    /// This is expected to set a cookie (depending on success/failure). For
-    /// this cookie to persist across more than one request, a persistent
-    /// `client` is required.
-    pub api_client: reqwest::Client,
-}
 
 pub struct ConfirmationLinks {
     pub text: Url,
@@ -151,8 +150,21 @@ impl TestUser {
     }
 }
 
+pub struct TestApp {
+    pub addr: String,
+    pub port: u16,
+    pub pool: PgPool,
+    pub email_server: MockServer,
+    // personally, i would've used a method for user-related stuff, but presumably keeping it as a
+    // struct field makes creds easier to access, let's see...
+    pub test_user: TestUser,
+    /// A persistent `Client` used to persist cookies across more than one
+    /// request
+    pub api_client: reqwest::Client,
+}
+
 impl TestApp {
-    /// Convenience method for making a `/subscriptions` `POST` request. While
+    /// Convenience method for making a `POST /subscriptions` request. While
     /// meant to mimic a `subscriptions::subscribe` a call, this method does
     /// -not- send email (necessary for successful result), so tests that use
     /// this method should simulate that separately (e.g. with `Mock`)
@@ -231,6 +243,29 @@ impl TestApp {
             .unwrap()
     }
 
+    pub async fn get_change_password(&self) -> Response {
+        self.api_client
+            .get(format!("{}/admin/password", self.addr))
+            .send()
+            .await
+            .unwrap()
+    }
+
+    pub async fn post_change_password<B>(
+        &self,
+        body: &B,
+    ) -> reqwest::Response
+    where
+        B: Serialize,
+    {
+        self.api_client
+            .post(format!("{}/admin/password", self.addr))
+            .form(body)
+            .send()
+            .await
+            .unwrap()
+    }
+
     /// Extract text and html links from an email response (e.g. from mailchimp)
     pub fn get_confirmation_links(
         &self,
@@ -256,7 +291,7 @@ impl TestApp {
 
         let body: Value = serde_json::from_slice(&email_resp.body).unwrap();
 
-        // this will be `base_url`/subscriptions/confirm?subscription_token=...
+        // this will be <base_url>/subscriptions/confirm?subscription_token=...
         let text = get_first_link(body["TextBody"].as_str().unwrap());
         let html = get_first_link(body["HtmlBody"].as_str().unwrap());
 
@@ -301,10 +336,10 @@ async fn configure_database(cfg: &DatabaseSettings) -> PgPool {
 /// well as the address to the (randomised) postgres connection.
 /// The `http://` prefix is important, as this is the address that clients will send requests to.
 pub async fn spawn_app() -> TestApp {
-    // init the tracing subscriber once only
+    // init the tracing subscriber; only required for the first test
     Lazy::force(&TRACING);
 
-    // simulate mailchimp api
+    // simulate mailchimp api (we never actually use the real api!)
     let email_server = MockServer::start().await;
 
     let cfg = {
@@ -322,6 +357,8 @@ pub async fn spawn_app() -> TestApp {
 
         // port 0 is reserved by the OS; the server will be spawned on an address with a
         // random available port. this address/port must then be made known to clients
+        // https://networkengineering.stackexchange.com/q/76587
+        // https://web.archive.org/web/20150402103756/http://lxr.free-electrons.com/source/net/ipv4/inet_connection_sock.c?v=3.18#L89
         rand_cfg.application.port = 0;
 
         rand_cfg.email_client.base_url = email_server.uri();
@@ -329,38 +366,39 @@ pub async fn spawn_app() -> TestApp {
         rand_cfg
     };
 
-    // most of the init is now done in `build`, but we now we need to retrieve the
-    // randomised db port
-
     // we don't use this `pool` for TestApp, probably because the `pool` we really
     // need should be obtained -after- the server has been `spawn`ed
     let _pool = configure_database(&cfg.database).await;
+
+    // most of the init is now done in `Application::build`, but we still need to
+    // retrieve the randomised db port
 
     // let server = startup::run(listener, pool.clone(), email_client).unwrap();
     // let server = build(cfg.clone()).await.unwrap();
     let app = Application::build(cfg.clone()).await.unwrap();
 
-    // previously, random port was retrieved here, and addr was declared
+    // previously, the random db port was retrieved here, and addr was declared
     // accordingly. however, since this is now abstracted away, we are left only
-    // with a Server, which does not expose the random port. this must now be
-    // retrieved via Application.get_port()
+    // with an `Application`, which does not expose the random port. this must now
+    // be retrieved via `Application.get_port()`
 
     // let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     // let port = listener.local_addr().unwrap().port();
-    let addr = format!(
-        // "http://127.0.0.1:{}",
-        "http://localhost:{}",
-        app.get_port()
-    );
     let port = app.get_port(); // for constructing confirmation urls
 
-    let pool = get_connection_pool(&cfg.database); // can be done before or after spawn, apparently
+    let addr = format!(
+        // "http://127.0.0.1:{}",
+        "http://localhost:{port}",
+    );
+
+    let pool = get_connection_pool(&cfg.database); // pool can be obtained before or after spawn, apparently
     tokio::spawn(app.run_until_stopped());
 
     let test_user = TestUser::generate();
 
+    // for cookie persistence
     let api_client = reqwest::Client::builder()
-        // don't redirect to `/`, so we can check that login returns 303
+        // don't redirect, because we trigger redirects ourselves
         .redirect(redirect::Policy::none())
         .cookie_store(true)
         .build()
@@ -379,7 +417,8 @@ pub async fn spawn_app() -> TestApp {
     test_app
 }
 
-pub async fn check_redirect(
+/// Remember leading slash
+pub fn check_redirect(
     resp: &Response,
     location: &str,
 ) {

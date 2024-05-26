@@ -1,22 +1,15 @@
 use std::fmt::Debug;
-use std::fmt::Display;
 
 use actix_session::Session;
 use actix_web::http::header::ContentType;
-use actix_web::http::header::LOCATION;
 use actix_web::web;
 use actix_web::HttpResponse;
 use anyhow::Context;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-/// Convert arbitrary error types to `actix_web::Error` with HTTP 500
-fn error_500<T>(e: T) -> actix_web::Error
-where
-    T: Debug + Display + 'static,
-{
-    actix_web::error::ErrorInternalServerError(e)
-}
+use crate::utils::error_500;
+use crate::utils::redirect;
 
 async fn get_username(
     user_id: Uuid,
@@ -42,11 +35,7 @@ pub async fn admin_dashboard(
 ) -> Result<HttpResponse, actix_web::Error> {
     let username = match session.get::<Uuid>("user_id").map_err(error_500)? {
         Some(user_id) => get_username(user_id, &pool).await.map_err(error_500)?,
-        None => {
-            return Ok(HttpResponse::SeeOther()
-                .insert_header((LOCATION, "/login"))
-                .finish())
-        }
+        None => return Ok(redirect("/login")),
     };
 
     let body = format!(

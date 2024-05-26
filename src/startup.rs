@@ -20,6 +20,8 @@ use crate::configuration::DatabaseSettings;
 use crate::configuration::Settings;
 use crate::email_client::EmailClient;
 use crate::routes::admin_dashboard;
+use crate::routes::change_password;
+use crate::routes::change_password_form;
 use crate::routes::confirm;
 use crate::routes::health_check;
 use crate::routes::home;
@@ -51,6 +53,19 @@ impl Application {
         // get the randomised port assigned by OS; this will be saved in the `port`
         // field
         let port = listener.local_addr().unwrap().port();
+
+        // for distributed database, PostgreSQL should generally be used as a first
+        // option as it is "easy to run locally and in CI via Docker,
+        // well-supported within the Rust ecosystem".
+        //
+        // sqlx is chosen for compile-time safety and async support; `diesel` is unique
+        // in having a DSL that makes queries reusable within `diesel`, but not
+        // outside
+        //
+        // cargo install sqlx-cli --no-default-features --features rustls,postgres
+        //
+        // querying a (postgres) db can be done via psql (CLI) or `sqlx::PgConnection`
+        // (Rust)
 
         // connect_lazy only connects when the pool is used for the first time (this is
         // not async). this allows db-free requests (e.g. health_check) to avoid
@@ -113,10 +128,9 @@ pub struct HmacSecret(pub Secret<String>);
 
 /// The server is not responsible for binding to an address, it only listens to
 /// an already bound address.
+// Requires a running Redis instance (?).
 ///
-/// Contains all API endpoints:
-/// `/health_check` (GET)
-/// `/subscriptions` (POST)
+/// Declares all API endpoints.
 pub async fn run(
     // address: &str, // fixed port
     listener: TcpListener,
@@ -152,9 +166,13 @@ pub async fn run(
 
     let secret_key = Key::from(hmac_secret.expose_secret().as_bytes());
 
+    // client side cookies
     let cookie_store = CookieMessageStore::builder(secret_key.clone()).build();
     let msg_framework = FlashMessagesFramework::builder(cookie_store).build();
 
+    // server side sessions
+    // required only for persistent logins; all other parts of the app can work
+    // without redis
     let redis_store = RedisSessionStore::new(redis_uri.expose_secret()).await?;
 
     // `Data` is externally an `Arc` (for sharing/cloning), internally a `HashMap`
@@ -168,9 +186,6 @@ pub async fn run(
     // `HttpServer::new` takes as argument. That is why `connection` has to be
     // cloneable - we need to have one for every copy of `App`."
     let server = HttpServer::new(move || {
-        // essentially equivalent to a `match` block, where we try to exhaust a series
-        // of routes (match arms)
-
         // order is probably not significant, but the book declares wrappers, then
         // routes, then app data
         App::new()
@@ -182,15 +197,19 @@ pub async fn run(
                 redis_store.clone(),
                 secret_key.clone(),
             ))
-            .route("/", web::get().to(home))
-            .route("/login", web::get().to(login_form))
-            .route("/login", web::post().to(login))
-            .route("/health_check", web::get().to(health_check))
+            // essentially equivalent to a `match` block, where we try to exhaust a series
+            // of routes (match arms). this process is common to all API frameworks.
             // remember, the guard must match the client's request type
+            .route("/", web::get().to(home))
+            .route("/health_check", web::get().to(health_check))
             .route("/subscriptions", web::post().to(subscribe))
             .route("/subscriptions/confirm", web::get().to(confirm))
             .route("/newsletters", web::post().to(publish))
+            .route("/login", web::get().to(login_form))
+            .route("/login", web::post().to(login))
             .route("/admin/dashboard", web::get().to(admin_dashboard))
+            .route("/admin/password", web::get().to(change_password_form))
+            .route("/admin/password", web::post().to(change_password))
             // with `.app_data`, global state (e.g. db connection, http client(s)) is made available
             // to all endpoints, if specified as args. args passed must either implement
             // `Clone` or be wrapped with `web::Data`. the latter is preferred as -all-
@@ -228,25 +247,7 @@ pub async fn run(
     // ~/ > curl 127.0.0.1:5748
     // Hello world
 
-    // where to place tests:
-    // 1. embedded (with #[cfg(test)]): good for unit testing, easy access to
-    //    private objects, never exposed to users
-    // 2. /tests dir: for integration testing
-    // 3. doctests: (not discussed)
-
-    // to allow testing, we move almost everything to src/lib.rs, keeping only
-    // the entrypoint in src/main.rs
-
-    // for distributed database, PostgreSQL should generally be used as a first
-    // option as it is "easy to run locally and in CI via Docker, well-supported
-    // within the Rust ecosystem".
-    //
-    // sqlx is chosen for compile-time safety and async support; `diesel` is
-    // unique in having a DSL that makes queries reusable within `diesel`, but
-    // not outside
-    //
-    // cargo install sqlx-cli --no-default-features --features rustls,postgres
-    //
-    // querying a (postgres) db can be done via psql (CLI) or
-    // `sqlx::PgConnection` (Rust)
+    // tests were moved from src/main.rs to src/lib.rs, keeping only the
+    // entrypoint in src/main.rs. later, tests were again moved from src/lib.rs
+    // to a dedicated tests dir; see tests/main.rs for details
 }
