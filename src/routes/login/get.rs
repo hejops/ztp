@@ -89,7 +89,8 @@ pub async fn login_form(
     // };
 
     let mut error_msg = String::new();
-    for msg in flash_messages.iter().filter(|m| m.level() == Level::Error) {
+    for msg in flash_messages.iter() {
+        //.filter(|m| m.level() == Level::Error) {
         // the book calls `writeln!(String)`, which is no longer allowed?
         // writeln!(error_html, "<p><i>{}</i></p>", m.content()).unwrap();
         error_msg.push_str(&format!("<p><i>{}</i></p>\n", msg.content()))

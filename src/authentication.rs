@@ -97,7 +97,7 @@ fn verify_password(
 //
 /// Validate supplied credentials (username/password) by checking against the
 /// `users` table in db, returning the user's `Uuid` on success. User
-/// enumeration is protected against.
+/// enumeration is protected against (using HMAC).
 #[tracing::instrument(name = "Validating credentials", skip(creds, pool))]
 pub async fn validate_credentials(
     creds: Credentials,

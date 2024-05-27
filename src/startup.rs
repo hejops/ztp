@@ -27,6 +27,7 @@ use crate::routes::health_check;
 use crate::routes::home;
 use crate::routes::login;
 use crate::routes::login_form;
+use crate::routes::logout;
 use crate::routes::publish;
 use crate::routes::subscribe;
 
@@ -210,6 +211,7 @@ pub async fn run(
             .route("/admin/dashboard", web::get().to(admin_dashboard))
             .route("/admin/password", web::get().to(change_password_form))
             .route("/admin/password", web::post().to(change_password))
+            .route("/admin/logout", web::post().to(logout))
             // with `.app_data`, global state (e.g. db connection, http client(s)) is made available
             // to all endpoints, if specified as args. args passed must either implement
             // `Clone` or be wrapped with `web::Data`. the latter is preferred as -all-

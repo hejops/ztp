@@ -199,12 +199,6 @@ impl TestApp {
             .unwrap()
     }
 
-    /// Get HTML to be inspected
-    pub async fn get_login_html(&self) -> String {
-        // reqwest::Client::new()
-        self.get_admin_dashboard().await.text().await.unwrap()
-    }
-
     pub async fn get_admin_dashboard(&self) -> Response {
         self.api_client
             .get(format!("{}/admin/dashboard", self.addr))
@@ -213,9 +207,14 @@ impl TestApp {
             .unwrap()
     }
 
+    /// Get HTML to be inspected
     pub async fn get_admin_dashboard_html(&self) -> String {
+        self.get_admin_dashboard().await.text().await.unwrap()
+    }
+
+    pub async fn get_login_html(&self) -> String {
         self.api_client
-            .get(format!("{}/admin/dashboard", self.addr))
+            .get(format!("{}/login", self.addr))
             .send()
             .await
             .unwrap()
@@ -243,12 +242,24 @@ impl TestApp {
             .unwrap()
     }
 
+    pub async fn post_logout(&self) -> reqwest::Response {
+        self.api_client
+            .post(format!("{}/admin/logout", self.addr))
+            .send()
+            .await
+            .unwrap()
+    }
+
     pub async fn get_change_password(&self) -> Response {
         self.api_client
             .get(format!("{}/admin/password", self.addr))
             .send()
             .await
             .unwrap()
+    }
+
+    pub async fn get_change_password_html(&self) -> String {
+        self.get_change_password().await.text().await.unwrap()
     }
 
     pub async fn post_change_password<B>(

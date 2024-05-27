@@ -11,7 +11,8 @@ use uuid::Uuid;
 use crate::utils::error_500;
 use crate::utils::redirect;
 
-async fn get_username(
+/// Given a unique user UUID, return the associated username
+pub async fn get_username(
     user_id: Uuid,
     pool: &PgPool,
 ) -> anyhow::Result<String> {
@@ -47,6 +48,15 @@ pub async fn admin_dashboard(
 </head>
 <body>
     <p>Welcome {username}!</p>
+    <p>Available actions:</p>
+    <ol>
+        <li><a href="/admin/password">Change password</a></li>
+        <li>
+            <form name="logoutForm" action="/admin/logout" method="post">
+                <input type="submit" value="Logout">
+            </form>
+        </li>
+    </ol>
 </body>
 </html>"#
     );

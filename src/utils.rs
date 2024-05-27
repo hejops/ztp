@@ -12,6 +12,7 @@ where
     actix_web::error::ErrorInternalServerError(e)
 }
 
+/// Don't forget the leading slash!
 pub fn redirect(location: &str) -> HttpResponse {
     HttpResponse::SeeOther()
         .insert_header((LOCATION, location))
