@@ -182,18 +182,38 @@ impl TestApp {
             .unwrap()
     }
 
+    pub async fn get_newsletters(&self) -> reqwest::Response {
+        self.api_client
+            .get(format!("{}/admin/newsletters", self.addr))
+            .send()
+            .await
+            .unwrap()
+    }
+
+    pub async fn get_newsletters_html(&self) -> String {
+        self.get_newsletters().await.text().await.unwrap()
+    }
+
     /// Requires authorization (via `test_user`)
-    pub async fn post_newsletters(
+    // pub async fn post_newsletters(
+    //     &self,
+    //     body: serde_json::Value,
+    // ) -> reqwest::Response {
+    pub async fn post_newsletters<B>(
         &self,
-        body: serde_json::Value,
-    ) -> reqwest::Response {
+        body: &B,
+    ) -> reqwest::Response
+    where
+        B: Serialize,
+    {
         // reqwest::Client::new()
         self.api_client
-            .post(format!("{}/newsletters", self.addr))
+            .post(format!("{}/admin/newsletters", self.addr))
             // .basic_auth(Uuid::new_v4().to_string(), Some(Uuid::new_v4().to_string()))
             // .basic_auth(username, Some(password)) // no tuple unpacking in rust!
-            .basic_auth(&self.test_user.username, Some(&self.test_user.password))
-            .json(&body)
+            // .basic_auth(&self.test_user.username, Some(&self.test_user.password))
+            // .json(&body)
+            .form(&body)
             .send()
             .await
             .unwrap()
@@ -240,6 +260,18 @@ impl TestApp {
             .send()
             .await
             .unwrap()
+    }
+
+    pub async fn login(
+        &self,
+        username: &str,
+        password: &str,
+    ) {
+        let login_body = serde_json::json!({
+            "username": username,
+            "password": password,
+        });
+        self.post_login(&login_body).await;
     }
 
     pub async fn post_logout(&self) -> reqwest::Response {

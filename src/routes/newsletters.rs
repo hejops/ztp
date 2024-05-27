@@ -1,37 +1,34 @@
 use std::fmt::Debug;
 
 use actix_web::http::header;
-use actix_web::http::header::HeaderMap;
+use actix_web::http::header::ContentType;
 use actix_web::http::header::HeaderValue;
 use actix_web::http::StatusCode;
 use actix_web::web;
-use actix_web::HttpRequest;
 use actix_web::HttpResponse;
 use actix_web::ResponseError;
+use actix_web_flash_messages::FlashMessage;
+use actix_web_flash_messages::IncomingFlashMessages;
 use anyhow::Context;
-use base64::Engine;
-use secrecy::Secret;
 use serde::Deserialize;
 use sqlx::PgPool;
 
 use super::error_chain_fmt;
-use crate::authentication::validate_credentials;
-use crate::authentication::AuthError;
-use crate::authentication::Credentials;
 use crate::domain::SubscriberEmail;
 use crate::email_client::EmailClient;
 
 #[derive(Deserialize)]
 pub struct Newsletter {
     title: String,
-    content: NewsletterContent,
+    // content: NewsletterContent,
+    content: String,
 }
 
-#[derive(Deserialize)]
-struct NewsletterContent {
-    html: String,
-    text: String,
-}
+// #[derive(Deserialize)]
+// struct NewsletterContent {
+//     html: String,
+//     text: String,
+// }
 
 struct ConfirmedSubscriber {
     // email: String,
@@ -83,49 +80,95 @@ impl ResponseError for PublishError {
 
 /// Parse headers of a HTTP request. This does not actually validate any user
 /// credentials; for that, see `validate_credentials`.
-fn basic_authentication(headers: &HeaderMap) -> Result<Credentials, anyhow::Error> {
-    // authentication methods fall in three categories: passwords / objects /
-    // biometrics. because there are drawbacks associated with each, multi-factor
-    // authentication is recommended
+// fn basic_authentication(headers: &HeaderMap) -> Result<Credentials, anyhow::Error> {
+//     // authentication methods fall in three categories: passwords / objects /
+//     // biometrics. because there are drawbacks associated with each, multi-factor
+//     // authentication is recommended
+//
+//     // spec: RFCs 2617, 7617
+//     // - correct header ("Authorization")
+//     // - correct realm ("publish")
+//     // - correct username/password
+//
+//     let encoded = headers
+//         .get("Authorization")
+//         .context("No Authorization header")?
+//         .to_str()
+//         .context("Invalid str")?
+//         .strip_prefix("Basic ")
+//         .context("Authorization scheme was not 'Basic'")?;
+//
+//     let decoded = base64::engine::general_purpose::STANDARD
+//         .decode(encoded)
+//         .context("Failed to decode base64")?;
+//     let decoded = String::from_utf8(decoded).context("Invalid str")?;
+//
+//     let mut creds = decoded.splitn(2, ':');
+//
+//     let username = creds
+//         .next()
+//         .ok_or_else(|| anyhow::anyhow!("No username"))?
+//         .to_string();
+//
+//     let password = creds
+//         .next()
+//         .ok_or_else(|| anyhow::anyhow!("No password"))?
+//         .to_string();
+//     let password = Secret::new(password);
+//
+//     Ok(Credentials { username, password })
+// }
 
-    // spec: RFCs 2617, 7617
-    // - correct header ("Authorization")
-    // - correct realm ("publish")
-    // - correct username/password
+/// `GET /admin/newsletters`
+pub async fn newsletter_form(
+    flash_messages: IncomingFlashMessages
+) -> Result<HttpResponse, actix_web::Error> {
+    let mut error_msg = String::new();
+    for msg in flash_messages.iter() {
+        //.filter(|m| m.level() == Level::Error) {
+        // the book calls `writeln!(String)`, which is no longer allowed?
+        // writeln!(error_html, "<p><i>{}</i></p>", m.content()).unwrap();
+        error_msg.push_str(&format!("<p><i>{}</i></p>\n", msg.content()))
+    }
 
-    let encoded = headers
-        .get("Authorization")
-        .context("No Authorization header")?
-        .to_str()
-        .context("Invalid str")?
-        .strip_prefix("Basic ")
-        .context("Authorization scheme was not 'Basic'")?;
+    // the book uses 2 input boxes for content (text/html), but i don't feel like
+    // doing this
 
-    let decoded = base64::engine::general_purpose::STANDARD
-        .decode(encoded)
-        .context("Failed to decode base64")?;
-    let decoded = String::from_utf8(decoded).context("Invalid str")?;
+    let body = format!(
+        r#"
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>Submit new issue</title>
+  </head>
+  {error_msg}
+  <body>
+    <form action="/admin/newsletters" method="post">
+      <label>
+        Title
+        <input type="text" placeholder="Enter Title" name="title" />
+      </label>
+      <label>
+        Content
+        <input type="text" placeholder="Enter Content" name="content" />
+      </label>
+      <button type="submit">Submit</button>
+    </form>
+  </body>
+</html>
+    "#
+    );
 
-    let mut creds = decoded.splitn(2, ':');
-
-    let username = creds
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("No username"))?
-        .to_string();
-
-    let password = creds
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("No password"))?
-        .to_string();
-    let password = Secret::new(password);
-
-    Ok(Credentials { username, password })
+    Ok(HttpResponse::Ok()
+        .content_type(ContentType::html())
+        .body(body))
 }
 
-/// `POST /newsletters`
+/// `POST /admin/newsletters`
 #[tracing::instrument(
     name = "Publishing newsletter",
-    skip(body, pool, email_client, request),
+    skip(form, pool, email_client),
     // `Empty` indicates that the value of a field is not currently present but will be recorded
     // later (with `Span.record`).
     fields(
@@ -134,29 +177,33 @@ fn basic_authentication(headers: &HeaderMap) -> Result<Credentials, anyhow::Erro
     )
 )]
 pub async fn publish(
-    body: web::Json<Newsletter>,
+    // body: web::Json<Newsletter>,
+    form: web::Form<Newsletter>,
     // like in `subscribe`
     pool: web::Data<PgPool>,
     email_client: web::Data<EmailClient>,
-    request: HttpRequest,
+    // request: HttpRequest,
+    // _user_id: web::ReqData<UserId>,
 ) -> Result<HttpResponse, PublishError> {
-    let creds = basic_authentication(request.headers()).map_err(PublishError::AuthError)?;
+    // let creds =
+    // basic_authentication(request.headers()).map_err(PublishError::AuthError)?;
 
-    tracing::Span::current().record(
-        "username",
-        // &creds.username,
-        tracing::field::display(&creds.username),
-    );
-
-    let id = validate_credentials(creds, &pool)
-        .await
-        // AuthError can be mapped to PublishError 1:1
-        .map_err(|e| match e {
-            AuthError::UnexpectedError(_) => PublishError::UnexpectedError(e.into()),
-            AuthError::InvalidCredentials(_) => PublishError::AuthError(e.into()),
-        })?;
-
-    tracing::Span::current().record("user_id", tracing::field::display(id));
+    // tracing::Span::current().record(
+    //     "username",
+    //     // &creds.username,
+    //     tracing::field::display(&creds.username),
+    // );
+    //
+    // let id = validate_credentials(creds, &pool)
+    //     .await
+    //     // AuthError can be mapped to PublishError 1:1
+    //     .map_err(|e| match e {
+    //         AuthError::UnexpectedError(_) =>
+    // PublishError::UnexpectedError(e.into()),
+    //         AuthError::InvalidCredentials(_) =>
+    // PublishError::AuthError(e.into()),     })?;
+    //
+    // tracing::Span::current().record("user_id", tracing::field::display(id));
 
     let subs = get_confirmed_subscribers(&pool).await?;
     for sub in subs {
@@ -164,9 +211,10 @@ pub async fn publish(
             Ok(sub) => email_client
                 .send_email(
                     &sub.email,
-                    &body.title,
-                    &body.content.html,
-                    &body.content.text,
+                    &form.title,
+                    &form.content,
+                    &form.content,
+                    // &body.content.text,
                 )
                 .await
                 // `with_context` is lazy, and is preferred when the context is not static
@@ -178,6 +226,7 @@ pub async fn publish(
             ),
         }
     }
+    FlashMessage::info("New issue published successfully.").send();
     Ok(HttpResponse::Ok().finish())
 }
 
