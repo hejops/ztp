@@ -23,7 +23,7 @@ use crate::email_client::EmailClient;
 use crate::startup::AppBaseUrl;
 
 #[derive(Deserialize)]
-pub struct FormData {
+pub struct SubscriberFormData {
     name: String,
     email: String,
 }
@@ -31,9 +31,9 @@ pub struct FormData {
 // personally i would've placed this in `new_subscriber` (since i like to keep
 // structs and impls together), but this requires `FormData`'s fields to be
 // `pub`
-impl TryFrom<FormData> for NewSubscriber {
+impl TryFrom<SubscriberFormData> for NewSubscriber {
     type Error = String;
-    fn try_from(value: FormData) -> Result<Self, Self::Error> {
+    fn try_from(value: SubscriberFormData) -> Result<Self, Self::Error> {
         let name = SubscriberName::parse(value.name)?;
         let email = SubscriberEmail::parse(value.email)?;
 
@@ -340,7 +340,7 @@ impl ResponseError for SubscribeError {
     )
 )]
 pub async fn subscribe(
-    form: web::Form<FormData>,
+    form: web::Form<SubscriberFormData>,
     // all subsequent args are inherited via App.app_data; thus arg types must be unique
     pool: web::Data<PgPool>,
     email_client: web::Data<EmailClient>,

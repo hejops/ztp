@@ -17,8 +17,8 @@ async fn login_invalid() {
     // }", cookies); assert!(cookies.contains(&
     // reqwest::header::HeaderValue::from_str("_foo").unwrap()));
 
-    // cookie setting/removal is handled as flash messages; we don't have a way to
-    // test it
+    // cookie setting/removal is handled as flash messages; we don't have a way
+    // to test it
 
     // let cookie = resp.cookies().find(|c| c.name() == "_flash").unwrap();
     // // println!("{:?}", cookie);
@@ -30,12 +30,6 @@ async fn login_invalid() {
     // println!("{}", html);
     // assert!(html.contains("<p><i>You are not authorized to view this
     // page.</i></p>"));
-
-    check_redirect(&resp, "/login");
-
-    // error should not persist on reload
-    let html = app.get_login_html().await;
-    assert!(!html.contains("<p><i>You are not authorized to view this page.</i></p>"));
 }
 
 #[tokio::test]

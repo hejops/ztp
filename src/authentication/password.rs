@@ -7,7 +7,6 @@
 //    federation
 //
 // #3 will be our main target
-
 use anyhow::Context;
 use argon2::password_hash::SaltString;
 use argon2::Argon2;

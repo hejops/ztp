@@ -17,7 +17,7 @@ use crate::session_state::TypedSession;
 
 /// Login credentials
 #[derive(Deserialize)]
-pub struct FormData {
+pub struct LoginFormData {
     username: String,
     password: Secret<String>,
 }
@@ -77,7 +77,7 @@ impl Debug for LoginError {
     )
 )]
 pub async fn login(
-    form: web::Form<FormData>,
+    form: web::Form<LoginFormData>,
     pool: web::Data<PgPool>,
     // secret: web::Data<Secret<String>>,
     // secret: web::Data<HmacSecret>,
@@ -122,6 +122,8 @@ pub async fn login(
         let resp = HttpResponse::SeeOther()
             .insert_header(("LOCATION", "/login"))
             .finish();
+        // InternalError::new(err, resp.status())
+        // equivalent
         InternalError::from_response(err, resp)
     }
 

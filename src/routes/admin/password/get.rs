@@ -3,18 +3,17 @@ use actix_web::HttpResponse;
 use actix_web_flash_messages::IncomingFlashMessages;
 use actix_web_flash_messages::Level;
 
-use crate::session_state::TypedSession;
-use crate::utils::error_500;
-use crate::utils::redirect;
-
 /// `GET /admin/password`
 pub async fn change_password_form(
-    session: TypedSession,
+    // session: TypedSession,
+    // user_id: web::ReqData<UserId>,
     flash_messages: IncomingFlashMessages,
 ) -> Result<HttpResponse, actix_web::Error> {
-    if session.get_user_id().map_err(error_500)?.is_none() {
-        return Ok(redirect("/login"));
-    };
+    // if session.get_user_id().map_err(error_500)?.is_none() {
+    //     return Ok(redirect("/login"));
+    // };
+
+    // let user_id = user_id.into_inner();
 
     // copied from `login_form`
     let mut error_msg = String::new();

@@ -1,9 +1,6 @@
-use actix_web::cookie::Cookie;
 use actix_web::http::header::ContentType;
-use actix_web::HttpRequest;
 use actix_web::HttpResponse;
 use actix_web_flash_messages::IncomingFlashMessages;
-use actix_web_flash_messages::Level;
 
 // #[derive(Deserialize)]
 // pub struct QueryParams {
