@@ -9,8 +9,10 @@
 // #3 will be our main target
 
 use anyhow::Context;
+use argon2::password_hash::SaltString;
 use argon2::Argon2;
 use argon2::PasswordHash;
+use argon2::PasswordHasher;
 use argon2::PasswordVerifier;
 use secrecy::ExposeSecret;
 use secrecy::Secret;
@@ -78,6 +80,37 @@ fn verify_password(
         .context("Invalid password")
         .map_err(AuthError::InvalidCredentials)?;
     Ok(())
+}
+
+/// Wrapper for `spawn_blocking` with `tracing`
+pub fn spawn_blocking_with_tracing<F, R>(f: F) -> JoinHandle<R>
+where
+    F: FnOnce() -> R + Send + 'static,
+    R: Send + 'static,
+{
+    let span = tracing::Span::current();
+
+    tokio::task::spawn_blocking(move || {
+        // tracing::info_span!("Verifying password hash").in_scope(|| {
+        span.in_scope(
+            // 1. `verify_password` strictly requires both args to be refs (`to_owned` won't work)
+            // 2. `move`ing refs into a thread is forbidden by the borrow checker; a thread spawned
+            //    by `spawn_blocking` is assumed to last for the duration of the entire program
+            // 3. we want to be able catch `Err` from `PasswordHash::new`; this is not trivial from
+            //    within a thread
+            //
+            // instead, only owned data should be moved into the thread
+
+            // Argon2::default().verify_password(
+            //     creds.password.expose_secret().as_bytes(),
+            //     &PasswordHash::new(stored_password.expose_secret())
+            //         .context("Failed to read stored PHC string")
+            //         .map_err(PublishError::UnexpectedError)
+            //         .unwrap(),
+            // )
+            f,
+        )
+    })
 }
 
 // on salting: "For each user, we generate a unique random string (salt), which
@@ -157,39 +190,6 @@ pub async fn validate_credentials(
     // takes more than 1 ms can be said to be CPU-bound, and should be handed
     // off to a separate threadpool (that does -not- yield)
 
-    /// Wrapper for `spawn_blocking` with `tracing`
-    pub fn spawn_blocking_with_tracing<F, R>(f: F) -> JoinHandle<R>
-    where
-        F: FnOnce() -> R + Send + 'static,
-        R: Send + 'static,
-    {
-        let span = tracing::Span::current();
-
-        tokio::task::spawn_blocking(move || {
-            // tracing::info_span!("Verifying password hash").in_scope(|| {
-            span.in_scope(
-                // 1. `verify_password` strictly requires both args to be refs (`to_owned` won't
-                //    work)
-                // 2. `move`ing refs into a thread is forbidden by the borrow checker; a thread
-                //    spawned by `spawn_blocking` is assumed to last for the duration of the entire
-                //    program
-                // 3. we want to be able catch `Err` from `PasswordHash::new`; this is not trivial
-                //    from within a thread
-                //
-                // instead, only owned data should be moved into the thread
-
-                // Argon2::default().verify_password(
-                //     creds.password.expose_secret().as_bytes(),
-                //     &PasswordHash::new(stored_password.expose_secret())
-                //         .context("Failed to read stored PHC string")
-                //         .map_err(PublishError::UnexpectedError)
-                //         .unwrap(),
-                // )
-                f,
-            )
-        })
-    }
-
     // notice that there are 2 closures: the function (`verify_password`) is first
     // placed in a tracing span, and this span is then placed in a blocking
     // thread
@@ -204,4 +204,41 @@ pub async fn validate_credentials(
     // "invalid username" error is already handled in `get_stored_credentials`
     // user_id.ok_or_else(|| PublishError::AuthError(anyhow::anyhow!("Invalid
     // username")))
+}
+
+fn compute_password_hash(password: Secret<String>) -> Result<Secret<String>, anyhow::Error> {
+    let salt = SaltString::generate(&mut rand::thread_rng());
+    let password_hash = Argon2::new(
+        // copied from `TestUser::store`
+        argon2::Algorithm::Argon2id,
+        argon2::Version::V0x13,
+        argon2::Params::new(19456, 2, 1, None).unwrap(),
+    )
+    .hash_password(password.expose_secret().as_bytes(), &salt)?
+    .to_string();
+    Ok(Secret::new(password_hash))
+}
+
+#[tracing::instrument(name = "Changing password", skip(password, pool))]
+pub async fn change_password(
+    user_id: Uuid,
+    password: Secret<String>,
+    pool: &PgPool,
+) -> Result<(), anyhow::Error> {
+    let password_hash = spawn_blocking_with_tracing(move || compute_password_hash(password))
+        .await?
+        .context("Failed to hash password")?;
+    sqlx::query!(
+        "
+        UPDATE users
+        SET password_hash = $1
+        WHERE user_id = $2
+",
+        password_hash.expose_secret(),
+        user_id
+    )
+    .execute(pool)
+    .await
+    .context("Failed to change password")?;
+    Ok(())
 }

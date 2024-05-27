@@ -59,5 +59,10 @@ pub async fn change_password(
         };
     }
 
-    todo!()
+    crate::authentication::change_password(user_id, form.0.new_password, &pool)
+        .await
+        .map_err(error_500)?;
+    // TODO: should probably use info, not error
+    FlashMessage::error("Password changed successfully.").send();
+    Ok(redirect("/admin/password"))
 }
