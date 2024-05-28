@@ -79,6 +79,7 @@ async fn send_confirmation_email(
 
     // https://keats.github.io/tera/docs/#base-template
     // https://github.com/Keats/tera/blob/3b2e96f624bd898cc96e964cd63194d58701ca4a/benches/templates.rs#L45
+    // see also: askama
 
     use tera::Context;
     use tera::Tera;
