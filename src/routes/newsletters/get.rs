@@ -1,6 +1,7 @@
 use actix_web::http::header::ContentType;
 use actix_web::HttpResponse;
 use actix_web_flash_messages::IncomingFlashMessages;
+use uuid::Uuid;
 
 /// `GET /admin/newsletters`
 pub async fn newsletter_form(
@@ -13,6 +14,9 @@ pub async fn newsletter_form(
         // writeln!(error_html, "<p><i>{}</i></p>", m.content()).unwrap();
         error_msg.push_str(&format!("<p><i>{}</i></p>\n", msg.content()))
     }
+
+    // generated per request
+    let key = Uuid::new_v4().to_string();
 
     // the book uses 2 input boxes for content (text/html), but i don't feel like
     // doing this
@@ -32,10 +36,15 @@ pub async fn newsletter_form(
         Title
         <input type="text" placeholder="Enter Title" name="title" />
       </label>
+
       <label>
         Content
         <input type="text" placeholder="Enter Content" name="content" />
       </label>
+
+      <!-- damn, people actually do this? -->
+      <input hidden type="text" name="idempotency_key" value="{key}">
+
       <button type="submit">Submit</button>
     </form>
   </body>

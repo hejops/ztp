@@ -31,7 +31,7 @@ use crate::routes::login;
 use crate::routes::login_form;
 use crate::routes::logout;
 use crate::routes::newsletter_form;
-use crate::routes::publish;
+use crate::routes::publish_newsletter;
 use crate::routes::subscribe;
 
 /// Wrapper for actix's `Server` with access to the bound port. Not to be
@@ -219,7 +219,7 @@ pub async fn run(
                     .route("/password", web::post().to(change_password))
                     .route("/logout", web::post().to(logout))
                     .route("/newsletters", web::get().to(newsletter_form))
-                    .route("/newsletters", web::post().to(publish)),
+                    .route("/newsletters", web::post().to(publish_newsletter)),
             )
             // with `.app_data`, global state (e.g. db connection, http client(s)) is made available
             // to all endpoints, if specified as args. args passed must either implement
