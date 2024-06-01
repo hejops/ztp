@@ -1,3 +1,4 @@
+use std::fmt::Display;
 use std::ops::Deref;
 
 use actix_web::body::MessageBody;
@@ -17,14 +18,15 @@ use crate::utils::redirect;
 #[derive(Clone)] //, Copy, Debug)]
 pub struct UserId(Uuid);
 
-// impl Display for UserId {
-//     fn fmt(
-//         &self,
-//         f: &mut std::fmt::Formatter<'_>,
-//     ) -> std::fmt::Result {
-//         self.0.fmt(f)
-//     }
-// }
+// required for `tracing`
+impl Display for UserId {
+    fn fmt(
+        &self,
+        f: &mut std::fmt::Formatter<'_>,
+    ) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
 
 // basically just for unpacking the inner Uuid type
 impl Deref for UserId {

@@ -1,5 +1,6 @@
 pub mod authentication;
 pub mod configuration;
+pub mod delivery;
 pub mod domain;
 pub mod email_client;
 pub mod idempotency;

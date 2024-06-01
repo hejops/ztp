@@ -1,34 +1,77 @@
-use std::fmt::Debug;
-
-use actix_web::http::header;
-use actix_web::http::header::HeaderValue;
-use actix_web::http::StatusCode;
 use actix_web::web;
 use actix_web::HttpResponse;
-use actix_web::ResponseError;
 use actix_web_flash_messages::FlashMessage;
 use anyhow::Context;
 use serde::Deserialize;
+use sqlx::Executor;
 use sqlx::PgPool;
+use sqlx::Postgres;
+use sqlx::Transaction;
+use uuid::Uuid;
 
 use crate::authentication::UserId;
-use crate::domain::SubscriberEmail;
-use crate::email_client::EmailClient;
 use crate::idempotency::save_response;
 use crate::idempotency::try_save_response;
 use crate::idempotency::IdempotencyKey;
 use crate::idempotency::NextAction;
-use crate::routes::error_chain_fmt;
 use crate::utils::error_400;
 use crate::utils::error_500;
 use crate::utils::redirect;
 
 #[derive(Deserialize)]
-pub struct Newsletter {
+pub struct NewsletterForm {
     title: String,
     // content: NewsletterContent,
     content: String,
     idempotency_key: String,
+}
+
+impl NewsletterForm {
+    #[tracing::instrument(skip_all)]
+    pub async fn insert_issue(
+        &self,
+        transaction: &mut Transaction<'static, Postgres>,
+    ) -> Result<Uuid, anyhow::Error> {
+        let id = Uuid::new_v4();
+        let query = sqlx::query!(
+            r#"
+                INSERT INTO newsletter_issues
+                (
+                    newsletter_issue_id,
+                    title,
+                    content,
+                    published_at
+                )
+                VALUES ($1, $2, $3, now())
+            "#,
+            id,
+            self.title,
+            self.content,
+        );
+        transaction.execute(query).await?;
+
+        Ok(id)
+    }
+}
+
+#[tracing::instrument(skip_all)]
+async fn enqueue_delivery_tasks(
+    transaction: &mut Transaction<'static, Postgres>,
+    newsletter_issue_id: Uuid,
+) -> Result<(), anyhow::Error> {
+    let query = sqlx::query!(
+        r#"
+        -- copy from subscriptions
+        INSERT INTO issue_delivery_queue
+            (newsletter_issue_id, subscriber_email)
+        SELECT $1, email
+        FROM subscriptions
+        WHERE status = 'confirmed'
+    "#,
+        newsletter_issue_id
+    );
+    transaction.execute(query).await?;
+    Ok(())
 }
 
 // #[derive(Deserialize)]
@@ -37,53 +80,53 @@ pub struct Newsletter {
 //     text: String,
 // }
 
-struct ConfirmedSubscriber {
-    // email: String,
-    email: SubscriberEmail,
-}
+// struct ConfirmedSubscriber {
+//     // email: String,
+//     email: SubscriberEmail,
+// }
 
-#[derive(thiserror::Error)]
-pub enum PublishError {
-    // #[error("{0}")]
-    // ValidationError(String),
-    #[error("Authentication failed")]
-    AuthError(#[source] anyhow::Error),
-    #[error(transparent)]
-    UnexpectedError(#[from] anyhow::Error),
-}
-
-impl Debug for PublishError {
-    fn fmt(
-        &self,
-        f: &mut std::fmt::Formatter<'_>,
-    ) -> std::fmt::Result {
-        error_chain_fmt(self, f)?;
-        Ok(())
-    }
-}
-
-impl ResponseError for PublishError {
-    // fn status_code(&self) -> StatusCode {
-    //     match self {
-    //         Self::AuthError(_) => StatusCode::UNAUTHORIZED,
-    //         _ => StatusCode::INTERNAL_SERVER_ERROR, // 500
-    //     }
-    // }
-
-    // supersedes `status_code`
-    fn error_response(&self) -> HttpResponse<actix_web::body::BoxBody> {
-        match self {
-            Self::AuthError(_) => {
-                let mut resp = HttpResponse::new(StatusCode::UNAUTHORIZED); // 401
-                let header_value = HeaderValue::from_str(r#"Basic realm="publish""#).unwrap();
-                resp.headers_mut()
-                    .insert(header::WWW_AUTHENTICATE, header_value);
-                resp
-            }
-            _ => HttpResponse::new(StatusCode::INTERNAL_SERVER_ERROR), // 500
-        }
-    }
-}
+// #[derive(thiserror::Error)]
+// pub enum PublishError {
+//     // #[error("{0}")]
+//     // ValidationError(String),
+//     #[error("Authentication failed")]
+//     AuthError(#[source] anyhow::Error),
+//     #[error(transparent)]
+//     UnexpectedError(#[from] anyhow::Error),
+// }
+//
+// impl Debug for PublishError {
+//     fn fmt(
+//         &self,
+//         f: &mut std::fmt::Formatter<'_>,
+//     ) -> std::fmt::Result {
+//         error_chain_fmt(self, f)?;
+//         Ok(())
+//     }
+// }
+//
+// impl ResponseError for PublishError {
+//     // fn status_code(&self) -> StatusCode {
+//     //     match self {
+//     //         Self::AuthError(_) => StatusCode::UNAUTHORIZED,
+//     //         _ => StatusCode::INTERNAL_SERVER_ERROR, // 500
+//     //     }
+//     // }
+//
+//     // supersedes `status_code`
+//     fn error_response(&self) -> HttpResponse<actix_web::body::BoxBody> {
+//         match self {
+//             Self::AuthError(_) => {
+//                 let mut resp = HttpResponse::new(StatusCode::UNAUTHORIZED);
+// // 401                 let header_value = HeaderValue::from_str(r#"Basic
+// realm="publish""#).unwrap();                 resp.headers_mut()
+//                     .insert(header::WWW_AUTHENTICATE, header_value);
+//                 resp
+//             }
+//             _ => HttpResponse::new(StatusCode::INTERNAL_SERVER_ERROR), // 500
+//         }
+//     }
+// }
 
 // note: POST is, per the spec, -not- idempotent. however, striving for
 // idempotence makes the API call easier to use
@@ -127,23 +170,28 @@ impl ResponseError for PublishError {
 ///
 /// Authentication is required, but this is handled by the
 /// `reject_anonymous_users` middleware.
+///
+/// Responsible only for creating new issue, adding it to the db, and enqueuing
+/// deliveries.
 // if `form` cannot be Deserialized, returns 400 automatically
 #[tracing::instrument(
     name = "Publishing newsletter",
-    skip(form, pool, email_client),
-    // `Empty` indicates that the value of a field is not currently present but will be recorded
-    // later (with `Span.record`).
-    fields(
-        username=tracing::field::Empty,
-        user_id=tracing::field::Empty,
-    )
+    // skip(form, pool, email_client),
+    // // `Empty` indicates that the value of a field is not currently present but will be recorded
+    // // later (with `Span.record`).
+    // fields(
+    //     username=tracing::field::Empty,
+    //     user_id=tracing::field::Empty,
+    // )
+    skip_all,
+    fields(user_id=%&*user_id) // ???
 )]
 pub async fn publish_newsletter(
     // body: web::Json<Newsletter>,
-    form: web::Form<Newsletter>,
+    form: web::Form<NewsletterForm>,
     // like in `subscribe`
     pool: web::Data<PgPool>,
-    email_client: web::Data<EmailClient>,
+    // email_client: web::Data<EmailClient>,
     // request: HttpRequest,
     user_id: web::ReqData<UserId>,
     // ) -> Result<HttpResponse, PublishError> {
@@ -199,40 +247,46 @@ pub async fn publish_newsletter(
     //    NOTHING)
     // 3. no response saved -> proceed
 
-    let transaction = match try_save_response(*user_id, &key, &pool)
+    let mut transaction = match try_save_response(*user_id, &key, &pool)
         .await
         .map_err(error_500)?
     {
-        NextAction::StartProcessing(t) => t,
         NextAction::ReturnSavedResponse(saved) => {
             FlashMessage::info("Issue has already been published.").send();
             return Ok(saved);
         }
+        NextAction::StartProcessing(t) => t,
     };
 
-    let subs = get_confirmed_subscribers(&pool).await.map_err(error_500)?;
-    for sub in subs {
-        match sub {
-            Ok(sub) => email_client
-                .send_email(
-                    &sub.email,
-                    &form.title,
-                    &form.content,
-                    &form.content,
-                    // &body.content.text,
-                )
-                .await
-                // `with_context` is lazy, and is preferred when the context is not static
-                // note: a single send_email failure terminates the -entire- loop prematurely!
-                .with_context(|| format!("could not send newsletter to {}", sub.email))
-                .map_err(error_500)?,
-            Err(e) => tracing::warn!(
-                e.cause_chain=?e,
-                "skipping invalid email"
-            ),
-        }
-    }
-    FlashMessage::info("New issue published successfully.").send();
+    let issue_id = form
+        .0
+        .insert_issue(&mut transaction)
+        .await
+        .context("Could not insert newsletter issue into db")
+        .map_err(error_500)?;
+
+    enqueue_delivery_tasks(&mut transaction, issue_id)
+        .await
+        .context("Could not enqueue delivery tasks")
+        .map_err(error_500)?;
+
+    // note: a single send_email failure terminates the -entire- loop prematurely.
+    // this, in itself, is not a problem, but allowing "intermediate"
+    // transactions is, i.e. we should only ever deliver to all subscribers, or
+    // none of them.
+    //
+    // backward recovery (e.g. reversing a financial transaction) is not suitable
+    // for sending email
+    //
+    // passive forward recovery uses checkpoints to keep track of state, and
+    // requires caller to repeatedly call until the action is finished -- not
+    // ideal
+    //
+    // active forward recovery uses a (background) task queue, detecting failed
+    // tasks and retrying them asynchronously. this essentially means storing
+    // all send events in the db
+
+    FlashMessage::info("New issue is being published...").send();
 
     // Ok(HttpResponse::Ok().finish())
     // Ok(redirect("/admin/newsletters"))
@@ -246,44 +300,44 @@ pub async fn publish_newsletter(
     Ok(resp)
 }
 
-#[tracing::instrument(name = "Getting list of confirmed subscribers", skip(pool))]
-async fn get_confirmed_subscribers(
-    pool: &PgPool
-) -> Result<Vec<Result<ConfirmedSubscriber, anyhow::Error>>, anyhow::Error> {
-    // recall: in subscriptions, we received `FormData` and, upon parsing, coerced
-    // it into our own struct `NewSubscriber`
-
-    // let rows = sqlx::query_as!(
-    // `query_as` coerces the retrieved rows into a desired type; in our case, we
-    // only need the `email` field, and skip the others to reduce data. in any
-    // case, type conversions are better done separately anyway (see below)
-    let subs = sqlx::query!(
-        r#"
-        SELECT email FROM subscriptions
-        WHERE status = 'confirmed'
-    "#,
-    )
-    .fetch_all(pool)
-    .await?
-    .into_iter()
-    // although user emails should have been parsed when they were added to the db, we
-    // cannot assume that they are (still) valid when retrieved. we -could- do a few things:
-    //
-    // 1. ignore errors (and potentially blow up)
-    // .map(|r| ConfirmedSubscriber {
-    //     email: SubscriberEmail::parse(r.email).unwrap(),
-    // })
-    //
-    // 2. skip invalid emails
-    // .flat_map(|r| SubscriberEmail::parse(r.email)) // clippy told me to do this
-    // .map(|r| ConfirmedSubscriber { email: r })
-    //
-    // 3. propagate errors up and let caller decide
-    .map(|r| match SubscriberEmail::parse(r.email) {
-        Ok(email) => Ok(ConfirmedSubscriber { email }),
-        Err(error) => Err(anyhow::anyhow!(error)),
-    })
-    .collect();
-
-    Ok(subs)
-}
+// #[tracing::instrument(name = "Getting list of confirmed subscribers",
+// skip(pool))] async fn get_confirmed_subscribers(
+//     pool: &PgPool
+// ) -> Result<Vec<Result<ConfirmedSubscriber, anyhow::Error>>, anyhow::Error> {
+//     // recall: in subscriptions, we received `FormData` and, upon parsing,
+// coerced     // it into our own struct `NewSubscriber`
+//
+//     // let rows = sqlx::query_as!(
+//     // `query_as` coerces the retrieved rows into a desired type; in our
+// case, we     // only need the `email` field, and skip the others to reduce
+// data. in any     // case, type conversions are better done separately anyway
+// (see below)     let subs = sqlx::query!(
+//         r#"
+//         SELECT email FROM subscriptions
+//         WHERE status = 'confirmed'
+//     "#,
+//     )
+//     .fetch_all(pool)
+//     .await?
+//     .into_iter()
+//     // although user emails should have been parsed when they were added to
+// the db, we     // cannot assume that they are (still) valid when retrieved.
+// we -could- do a few things:     //
+//     // 1. ignore errors (and potentially blow up)
+//     // .map(|r| ConfirmedSubscriber {
+//     //     email: SubscriberEmail::parse(r.email).unwrap(),
+//     // })
+//     //
+//     // 2. skip invalid emails
+//     // .flat_map(|r| SubscriberEmail::parse(r.email)) // clippy told me to do
+// this     // .map(|r| ConfirmedSubscriber { email: r })
+//     //
+//     // 3. propagate errors up and let caller decide
+//     .map(|r| match SubscriberEmail::parse(r.email) {
+//         Ok(email) => Ok(ConfirmedSubscriber { email }),
+//         Err(error) => Err(anyhow::anyhow!(error)),
+//     })
+//     .collect();
+//
+//     Ok(subs)
+// }

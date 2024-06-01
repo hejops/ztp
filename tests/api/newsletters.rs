@@ -1,5 +1,8 @@
 use std::time::Duration;
 
+use fake::faker::internet::en::SafeEmail;
+use fake::faker::name::en::Name;
+use fake::Fake;
 use wiremock::matchers::any;
 use wiremock::matchers::method;
 use wiremock::matchers::path;
@@ -59,7 +62,12 @@ async fn not_logged_in() {
 
 /// Add a subscriber to a (typically empty) db, but don't confirm
 async fn create_unconfirmed_subscriber(app: &TestApp) -> ConfirmationLinks {
-    let body = "name=john&email=foo%40bar.com";
+    // let body = "name=john&email=foo%40bar.com";
+    let body = serde_urlencoded::to_string([
+        ("name", Name().fake::<String>()),
+        ("email", SafeEmail().fake()),
+    ])
+    .unwrap();
 
     // (scoped) mocks must always be assigned and -named-!
     let _mock = Mock::given(path("/email"))
@@ -73,7 +81,7 @@ async fn create_unconfirmed_subscriber(app: &TestApp) -> ConfirmationLinks {
         .mount_as_scoped(&app.email_server)
         .await;
 
-    app.post_subscriptions(body.into())
+    app.post_subscriptions(body) //.into())
         .await
         .error_for_status()
         .unwrap();
@@ -166,6 +174,7 @@ async fn one_confirmed_subscriber() {
         .contains("New issue published successfully."));
 }
 
+/// Repeated sequential requests should only produce one response
 #[tokio::test]
 async fn idempotent() {
     let app = spawn_app().await;
@@ -175,7 +184,8 @@ async fn idempotent() {
     create_confirmed_subscriber(&app).await;
 
     // 2 requests, but only 1 email sent/received
-    let _ = Mock::given(any())
+    let _ = Mock::given(path("/email"))
+        .and(method("POST"))
         .respond_with(ResponseTemplate::new(200))
         .expect(1)
         .mount(&app.email_server)
@@ -204,6 +214,7 @@ async fn idempotent() {
         .contains("Issue has already been published."));
 }
 
+/// Repeated concurrent requests should only produce one response
 #[tokio::test]
 async fn concurrent() {
     let app = spawn_app().await;
@@ -232,4 +243,55 @@ async fn concurrent() {
     let (resp1, resp2) = tokio::join!(resp1, resp2);
     assert_eq!(resp1.status(), resp2.status());
     assert_eq!(resp1.text().await.unwrap(), resp2.text().await.unwrap());
+}
+
+/// Repeated concurrent requests should only produce one response
+#[tokio::test]
+async fn transient_error() {
+    let app = spawn_app().await;
+    app.login(&app.test_user.username, &app.test_user.password)
+        .await;
+
+    // create 2 subscribers
+    create_confirmed_subscriber(&app).await;
+    create_confirmed_subscriber(&app).await;
+
+    Mock::given(path("/email"))
+        .and(method("POST"))
+        .respond_with(ResponseTemplate::new(200))
+        .up_to_n_times(1)
+        .expect(1)
+        .mount(&app.email_server)
+        .await;
+
+    // simulate 1 error from email provider. this interrupts the entire sql
+    // transaction, so no response saved
+    Mock::given(path("/email"))
+        .and(method("POST"))
+        .respond_with(ResponseTemplate::new(500))
+        .up_to_n_times(1)
+        .expect(1)
+        .mount(&app.email_server)
+        .await;
+
+    let contents = serde_json::json!({
+        "title": "foo",
+        "content": "bar",
+        "idempotency_key": uuid::Uuid::new_v4().to_string()
+    });
+
+    let resp = app.post_newsletters(&contents).await;
+    assert_eq!(resp.status().as_u16(), 500);
+
+    // when retrying, only send to users who haven't received the email
+    Mock::given(path("/email"))
+        .and(method("POST"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .named("Retrying delivery")
+        .mount(&app.email_server)
+        .await;
+
+    let resp = app.post_newsletters(&contents).await;
+    assert_eq!(resp.status().as_u16(), 303);
 }
