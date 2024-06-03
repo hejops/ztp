@@ -1,11 +1,17 @@
+use std::thread::sleep;
+use std::time::Duration;
+
 use sqlx::Executor;
 use sqlx::PgPool;
 use sqlx::Postgres;
 use sqlx::Transaction;
 use uuid::Uuid;
 
+use crate::configuration::Settings;
 use crate::domain::SubscriberEmail;
+use crate::email_client;
 use crate::email_client::EmailClient;
+use crate::startup::get_connection_pool;
 
 /// Not to be confused with `NewsletterForm`!
 pub struct Newsletter {
@@ -24,12 +30,46 @@ async fn get_issue(
         SELECT title, content
         FROM newsletter_issues
         WHERE newsletter_issue_id = $1
-    "#,
+        "#,
         issue_id
     )
     .fetch_one(pool)
     .await?;
     Ok(issue)
+}
+
+/// To be run as a separate worker, outside the main API
+pub async fn init_worker(cfg: Settings) -> Result<(), anyhow::Error> {
+    // let sender_email = cfg.email_client.sender().unwrap();
+    // let timeout = cfg.email_client.timeout();
+    // let email_client = EmailClient::new(
+    //     cfg.email_client.base_url,
+    //     sender_email,
+    //     cfg.email_client.authorization_token,
+    //     timeout,
+    // );
+
+    let email_client = cfg.email_client.client();
+    let pool = get_connection_pool(&cfg.database);
+    send_email_loop(&pool, email_client).await
+}
+
+async fn send_email_loop(
+    pool: &PgPool,
+    email_client: EmailClient,
+) -> Result<(), anyhow::Error> {
+    loop {
+        match try_send_email(pool, &email_client).await {
+            Err(_) => tokio::time::sleep(Duration::from_secs(1)).await,
+            Ok(DeliveryOutcome::NoTasksLeft) => tokio::time::sleep(Duration::from_secs(10)).await,
+            Ok(DeliveryOutcome::TasksLeft) => {} // start next delivery immediately
+        }
+    }
+}
+
+pub enum DeliveryOutcome {
+    NoTasksLeft,
+    TasksLeft,
 }
 
 #[tracing::instrument(
@@ -42,52 +82,106 @@ async fn get_issue(
 )]
 pub async fn try_send_email(
     pool: &PgPool,
-    email_client: EmailClient,
-) -> Result<(), anyhow::Error> {
-    if let Some(result) = dequeue(pool).await? {
-        let (transaction, issue_id, email) = result;
+    email_client: &EmailClient,
+) -> Result<DeliveryOutcome, anyhow::Error> {
+    let task = start_delivery(pool).await?;
 
-        tracing::Span::current()
-            .record("issue_id", tracing::field::display(issue_id))
-            .record("email", tracing::field::display(&email));
+    if task.is_none() {
+        return Ok(DeliveryOutcome::NoTasksLeft);
+    }
 
-        // send
+    let (mut transaction, issue_id, email) = task.unwrap();
 
-        let issue = get_issue(pool, issue_id).await?;
+    tracing::Span::current()
+        .record("issue_id", tracing::field::display(issue_id))
+        .record("email", tracing::field::display(&email));
 
-        match SubscriberEmail::parse(email.clone()) {
-            Ok(email) => {
-                if let Err(e) = email_client
-                    .send_email(&email, &issue.title, &issue.content, &issue.content)
-                    .await
-                // // `with_context` is lazy, and is preferred when the context is
-                // // not static
-                // .with_context(|| format!("could not send newsletter to {}", email))
-                // .map_err(error_500)?, // "cannot be shared across threads"
-                {
-                    tracing::error!(
-                        e.cause_chain=?e,
-                        // e.message=%e,
-                        "failed to deliver to {email}"
-                    )
+    // send
+
+    let issue = get_issue(pool, issue_id).await?;
+
+    match SubscriberEmail::parse(email.clone()) {
+        Ok(email) => {
+            while let Err(e) = email_client
+                .send_email(&email, &issue.title, &issue.content, &issue.content)
+                .await
+            // // `with_context` is lazy, and is preferred when the context is
+            // // not static
+            // .with_context(|| format!("could not send newsletter to {}", email))
+            // .map_err(error_500)?, // "cannot be shared across threads"
+            {
+                tracing::error!(
+                    e.cause_chain=?e,
+                    // e.message=%e,
+                    "failed to deliver to {email}" //, retrying in {seconds} seconds..."
+                );
+
+                // everything below is beyond the scope of the book (and potentially
+                // unnecessary); i wanted to put it in a function, but `transaction` is very
+                // hard to pass around (we still need it for `finish_delivery`)
+
+                let row = sqlx::query!(
+                    r#"
+                        SELECT n_retries, execute_after
+                        FROM issue_delivery_queue
+                        WHERE
+                            newsletter_issue_id = $1 AND
+                            subscriber_email = $2
+                        "#,
+                    issue_id,
+                    email.as_ref()
+                )
+                .fetch_one(&mut *transaction)
+                .await?;
+
+                // i forgot to declare NOT NULL
+                let retries = row.n_retries.unwrap() + 1;
+                let seconds = retries * row.execute_after.unwrap();
+
+                if seconds > 5000 {
+                    return Err(anyhow::anyhow!("aborting after {retries} retries!"));
                 }
-            }
 
-            Err(e) => tracing::warn!(
-                e.cause_chain=?e,
-                // e.message=%e,
-                "skipping invalid email"
-            ),
+                tokio::time::sleep(Duration::from_secs(seconds as u64));
+
+                sqlx::query!(
+                    r#"
+                        UPDATE issue_delivery_queue
+                        SET
+                            n_retries = $1,
+                            execute_after = $2
+                        WHERE
+                            newsletter_issue_id = $3 AND
+                            subscriber_email = $4
+                        "#,
+                    retries,
+                    seconds,
+                    issue_id,
+                    email.as_ref()
+                )
+                .execute(&mut *transaction)
+                .await?;
+            }
         }
 
-        delete_task(transaction, issue_id, &email).await?;
+        Err(e) => tracing::warn!(
+            e.cause_chain=?e,
+            // e.message=%e,
+            "skipping invalid email"
+        ),
     }
-    Ok(())
+
+    finish_delivery(transaction, issue_id, &email).await?;
+
+    Ok(DeliveryOutcome::TasksLeft)
 }
 
 type PgTransaction = Transaction<'static, Postgres>;
 
-async fn dequeue(pool: &PgPool) -> Result<Option<(PgTransaction, Uuid, String)>, anyhow::Error> {
+/// Dequeue an entry in `issue_delivery_queue`
+async fn start_delivery(
+    pool: &PgPool
+) -> Result<Option<(PgTransaction, Uuid, String)>, anyhow::Error> {
     let mut transaction = pool.begin().await?;
     let query = sqlx::query!(
         r#"
@@ -98,7 +192,7 @@ async fn dequeue(pool: &PgPool) -> Result<Option<(PgTransaction, Uuid, String)>,
         SKIP LOCKED -- don't select currently locked rows
 
         LIMIT 1
-    "#
+        "#
     );
 
     // let result = transaction
@@ -116,7 +210,8 @@ async fn dequeue(pool: &PgPool) -> Result<Option<(PgTransaction, Uuid, String)>,
     Ok(result)
 }
 
-async fn delete_task(
+/// This is the last action in the transaction
+async fn finish_delivery(
     // https://users.rust-lang.org/t/solved-placement-of-mut-in-function-parameters/19891
     mut transaction: PgTransaction, // mutable transaction
     // transaction: &mut PgTransaction, // mutable reference
@@ -129,7 +224,7 @@ async fn delete_task(
         WHERE
             newsletter_issue_id = $1 AND
             subscriber_email = $2
-    "#,
+        "#,
         issue_id,
         subscriber_email
     );

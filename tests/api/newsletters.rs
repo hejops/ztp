@@ -138,7 +138,9 @@ async fn no_confirmed_subscribers() {
     assert!(app
         .get_newsletters_html()
         .await
-        .contains("New issue published successfully."));
+        .contains("New issue is being published..."));
+
+    app.send_all_emails().await;
 }
 
 #[tokio::test]
@@ -171,7 +173,9 @@ async fn one_confirmed_subscriber() {
     assert!(app
         .get_newsletters_html()
         .await
-        .contains("New issue published successfully."));
+        .contains("New issue is being published..."));
+
+    app.send_all_emails().await;
 }
 
 /// Repeated sequential requests should only produce one response
@@ -203,7 +207,7 @@ async fn idempotent() {
     assert!(app
         .get_newsletters_html()
         .await
-        .contains("New issue published successfully."));
+        .contains("New issue is being published..."));
 
     let resp = app.post_newsletters(&contents).await;
     check_redirect(&resp, "/admin/newsletters");
@@ -212,6 +216,8 @@ async fn idempotent() {
         .get_newsletters_html()
         .await
         .contains("Issue has already been published."));
+
+    app.send_all_emails().await;
 }
 
 /// Repeated concurrent requests should only produce one response
@@ -243,55 +249,63 @@ async fn concurrent() {
     let (resp1, resp2) = tokio::join!(resp1, resp2);
     assert_eq!(resp1.status(), resp2.status());
     assert_eq!(resp1.text().await.unwrap(), resp2.text().await.unwrap());
+
+    app.send_all_emails().await;
 }
 
-/// Repeated concurrent requests should only produce one response
-#[tokio::test]
-async fn transient_error() {
-    let app = spawn_app().await;
-    app.login(&app.test_user.username, &app.test_user.password)
-        .await;
+// "We deleted `transient_errors_do_not_cause_duplicate_deliveries_on_retries`.
+// It is no longer relevant given the redesign" -- the redesign refers to the
+// delegation of sending emails to a separate worker
 
-    // create 2 subscribers
-    create_confirmed_subscriber(&app).await;
-    create_confirmed_subscriber(&app).await;
-
-    Mock::given(path("/email"))
-        .and(method("POST"))
-        .respond_with(ResponseTemplate::new(200))
-        .up_to_n_times(1)
-        .expect(1)
-        .mount(&app.email_server)
-        .await;
-
-    // simulate 1 error from email provider. this interrupts the entire sql
-    // transaction, so no response saved
-    Mock::given(path("/email"))
-        .and(method("POST"))
-        .respond_with(ResponseTemplate::new(500))
-        .up_to_n_times(1)
-        .expect(1)
-        .mount(&app.email_server)
-        .await;
-
-    let contents = serde_json::json!({
-        "title": "foo",
-        "content": "bar",
-        "idempotency_key": uuid::Uuid::new_v4().to_string()
-    });
-
-    let resp = app.post_newsletters(&contents).await;
-    assert_eq!(resp.status().as_u16(), 500);
-
-    // when retrying, only send to users who haven't received the email
-    Mock::given(path("/email"))
-        .and(method("POST"))
-        .respond_with(ResponseTemplate::new(200))
-        .expect(1)
-        .named("Retrying delivery")
-        .mount(&app.email_server)
-        .await;
-
-    let resp = app.post_newsletters(&contents).await;
-    assert_eq!(resp.status().as_u16(), 303);
-}
+// /// Repeated concurrent requests should only produce one response
+// #[tokio::test]
+// async fn transient_error() {
+//     let app = spawn_app().await;
+//     app.login(&app.test_user.username, &app.test_user.password)
+//         .await;
+//
+//     // create 2 subscribers
+//     create_confirmed_subscriber(&app).await;
+//     create_confirmed_subscriber(&app).await;
+//
+//     Mock::given(path("/email"))
+//         .and(method("POST"))
+//         .respond_with(ResponseTemplate::new(200))
+//         .up_to_n_times(1)
+//         .expect(1)
+//         .mount(&app.email_server)
+//         .await;
+//
+//     // simulate 1 error from email provider. this interrupts the entire sql
+//     // transaction, so no response saved
+//     Mock::given(path("/email"))
+//         .and(method("POST"))
+//         .respond_with(ResponseTemplate::new(500))
+//         .up_to_n_times(1)
+//         .expect(1)
+//         .mount(&app.email_server)
+//         .await;
+//
+//     let contents = serde_json::json!({
+//         "title": "foo",
+//         "content": "bar",
+//         "idempotency_key": uuid::Uuid::new_v4().to_string()
+//     });
+//
+//     let resp = app.post_newsletters(&contents).await;
+//     assert_eq!(resp.status().as_u16(), 500);
+//
+//     // when retrying, only send to users who haven't received the email
+//     Mock::given(path("/email"))
+//         .and(method("POST"))
+//         .respond_with(ResponseTemplate::new(200))
+//         .expect(1)
+//         .named("Retrying delivery")
+//         .mount(&app.email_server)
+//         .await;
+//
+//     let resp = app.post_newsletters(&contents).await;
+//     assert_eq!(resp.status().as_u16(), 303);
+//
+//     app.send_all_emails().await;
+// }

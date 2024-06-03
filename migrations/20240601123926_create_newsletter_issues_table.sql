@@ -7,4 +7,3 @@ CREATE TABLE newsletter_issues(
 
    PRIMARY KEY(newsletter_issue_id)
 );
-

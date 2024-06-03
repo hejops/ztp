@@ -40,7 +40,7 @@ where
 /// db/app.
 ///
 /// The trait bounds of `subscriber` are derived from the type signature of
-/// `set_global_default`
+/// `tracing::subscriber::set_global_default`
 pub fn init_subscriber(subscriber: impl Subscriber + Send + Sync) {
     LogTracer::init().unwrap(); // required for `actix_web` logs to be captured by `Subscriber`
     set_global_default(subscriber).unwrap();

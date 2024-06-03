@@ -12,6 +12,7 @@ use serde_aux::field_attributes::deserialize_number_from_string;
 use sqlx::postgres::PgConnectOptions;
 
 use crate::domain::SubscriberEmail;
+use crate::email_client::EmailClient;
 
 /// Global configuration, loaded from configuration.yaml. See
 /// `get_configuration`.
@@ -67,14 +68,6 @@ pub struct DatabaseSettings {
     pub require_ssl: bool,
 }
 
-#[derive(Clone, Deserialize)]
-pub struct EmailClientSettings {
-    pub base_url: String,
-    pub sender_email: String,
-    pub authorization_token: Secret<String>,
-    pub timeout_ms: u64,
-}
-
 impl DatabaseSettings {
     //{{{
     /// Return connection to a named database (declared in config file). The db
@@ -116,6 +109,14 @@ impl DatabaseSettings {
     }
 } //}}}
 
+#[derive(Clone, Deserialize)]
+pub struct EmailClientSettings {
+    pub base_url: String,
+    pub sender_email: String,
+    pub authorization_token: Secret<String>,
+    pub timeout_ms: u64,
+}
+
 impl EmailClientSettings {
     /// Fails if `sender_email` cannot be parsed
     pub fn sender(&self) -> Result<SubscriberEmail, String> {
@@ -123,6 +124,19 @@ impl EmailClientSettings {
     }
 
     pub fn timeout(&self) -> Duration { Duration::from_millis(self.timeout_ms) }
+
+    /// Create a separate worker for sending emails, outside the main API
+    // copied from init_worker, for testing
+    pub fn client(self) -> EmailClient {
+        let sender_email = self.sender().unwrap();
+        let timeout = self.timeout();
+        EmailClient::new(
+            self.base_url,
+            sender_email,
+            self.authorization_token,
+            timeout,
+        )
+    }
 }
 
 pub enum Environment {

@@ -18,6 +18,10 @@ use uuid::Uuid;
 use wiremock::MockServer;
 use zero_to_prod::configuration::get_configuration;
 use zero_to_prod::configuration::DatabaseSettings;
+use zero_to_prod::configuration::EmailClientSettings;
+use zero_to_prod::delivery::try_send_email;
+use zero_to_prod::delivery::DeliveryOutcome;
+use zero_to_prod::email_client::EmailClient;
 use zero_to_prod::startup::get_connection_pool;
 use zero_to_prod::startup::Application;
 use zero_to_prod::telemetry::get_subscriber;
@@ -161,6 +165,7 @@ pub struct TestApp {
     /// A persistent `Client` used to persist cookies across more than one
     /// request
     pub api_client: reqwest::Client,
+    pub email_client: EmailClient,
 }
 
 impl TestApp {
@@ -340,6 +345,18 @@ impl TestApp {
 
         ConfirmationLinks { text, html }
     }
+
+    pub async fn send_all_emails(&self) {
+        // -> Result<(), anyhow::Error> {
+        loop {
+            if let DeliveryOutcome::NoTasksLeft = try_send_email(&self.pool, &self.email_client)
+                .await
+                .unwrap()
+            {
+                break;
+            }
+        }
+    }
 }
 
 /// Read `DatabaseSettings` and create a db with a randomised name (but with the
@@ -447,6 +464,8 @@ pub async fn spawn_app() -> TestApp {
         .build()
         .unwrap();
 
+    let email_client = cfg.email_client.client();
+
     let test_app = TestApp {
         addr,
         port,
@@ -454,6 +473,7 @@ pub async fn spawn_app() -> TestApp {
         email_server,
         test_user,
         api_client,
+        email_client,
     };
     // add_test_user(&test_app.pool).await;
     test_app.test_user.store(&test_app.pool).await;

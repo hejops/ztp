@@ -87,14 +87,15 @@ impl Application {
         // let pool = PgPoolOptions::new().connect_lazy_with(cfg.database.connection());
         let pool = get_connection_pool(&cfg.database);
 
-        let sender = cfg.email_client.sender().unwrap();
-        let timeout = cfg.email_client.timeout();
-        let email_client = EmailClient::new(
-            cfg.email_client.base_url,
-            sender,
-            cfg.email_client.authorization_token,
-            timeout,
-        );
+        // let sender = cfg.email_client.sender().unwrap();
+        // let timeout = cfg.email_client.timeout();
+        // let email_client = EmailClient::new(
+        //     cfg.email_client.base_url,
+        //     sender,
+        //     cfg.email_client.authorization_token,
+        //     timeout,
+        // );
+        let email_client = cfg.email_client.client();
 
         let server = run(
             listener,
