@@ -1,0 +1,41 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        -- INSERT INTO idempotency\n        --     (\n        --     user_id,\n        --     idempotency_key,\n        --     created_at,\n        --     response_status_code,\n        --     response_headers,\n        --     response_body\n        --     )\n        -- VALUES\n        --     (\n        --     $1,\n        --     $2,\n        --     now(), -- https://www.postgresql.org/docs/current/functions-datetime.html#FUNCTIONS-DATETIME-CURRENT\n        --     $3,\n        --     $4,\n        --     $5\n        --     )\n        UPDATE idempotency\n        SET\n            response_status_code = $3,\n            response_headers = $4,\n            response_body = $5\n        WHERE\n            user_id = $1 AND\n            idempotency_key = $2\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Int2",
+        {
+          "Custom": {
+            "name": "_header_pair",
+            "kind": {
+              "Array": {
+                "Custom": {
+                  "name": "header_pair",
+                  "kind": {
+                    "Composite": [
+                      [
+                        "name",
+                        "Text"
+                      ],
+                      [
+                        "value",
+                        "Bytea"
+                      ]
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b68d38b4d2809c6eb0e3b1b30785c0b9f960b5d36535a2363a8dcece23c0e69d"
+}
