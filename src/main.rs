@@ -3,7 +3,8 @@ use std::fmt::Display;
 
 use tokio::task::JoinError;
 use zero_to_prod::configuration::get_configuration;
-use zero_to_prod::delivery::init_worker;
+use zero_to_prod::delivery::init_delivery_worker;
+use zero_to_prod::idempotency::init_expiry_worker;
 use zero_to_prod::startup::Application;
 use zero_to_prod::telemetry::get_subscriber;
 use zero_to_prod::telemetry::init_subscriber;
@@ -77,21 +78,25 @@ async fn main() -> Result<(), anyhow::Error> {
     // server.run_until_stopped().await?;
 
     let server = Application::build(cfg.clone()).await?.run_until_stopped();
-    let worker = init_worker(cfg);
+    let delivery_worker = init_delivery_worker(cfg.clone());
+    let expiry_worker = init_expiry_worker(cfg);
 
     // If `spawn` is not called, all async branches are run on the same thread, and
     // the branches run concurrently, but -not- in parallel. If one branch
     // blocks the thread, -all- other branches will be unable to continue!
 
     let server_thread = tokio::spawn(server);
-    let worker_thread = tokio::spawn(worker);
+    let delivery_worker_thread = tokio::spawn(delivery_worker);
+    let expiry_worker_thread = tokio::spawn(expiry_worker);
 
     // Waits on multiple concurrent branches, returning when the **first** branch
     // completes, cancelling the remaining branches.
     tokio::select! {
+        // if let-ish syntax:
         // result = task => { do_stuff(result) }
         o = server_thread => { report_exit("API", o) },
-        o = worker_thread => { report_exit("Background worker", o) },
+        o = delivery_worker_thread => { report_exit("Background delivery worker", o) },
+        o = expiry_worker_thread => { report_exit("Background expiry worker", o) },
     }
 
     // note: the last function call is wrapped by tokio (so LSP can't reach it)

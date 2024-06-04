@@ -1,4 +1,3 @@
-use std::thread::sleep;
 use std::time::Duration;
 
 use sqlx::Executor;
@@ -9,7 +8,6 @@ use uuid::Uuid;
 
 use crate::configuration::Settings;
 use crate::domain::SubscriberEmail;
-use crate::email_client;
 use crate::email_client::EmailClient;
 use crate::startup::get_connection_pool;
 
@@ -39,7 +37,7 @@ async fn get_issue(
 }
 
 /// To be run as a separate worker, outside the main API
-pub async fn init_worker(cfg: Settings) -> Result<(), anyhow::Error> {
+pub async fn init_delivery_worker(cfg: Settings) -> Result<(), anyhow::Error> {
     // let sender_email = cfg.email_client.sender().unwrap();
     // let timeout = cfg.email_client.timeout();
     // let email_client = EmailClient::new(
@@ -142,7 +140,7 @@ pub async fn try_send_email(
                     return Err(anyhow::anyhow!("aborting after {retries} retries!"));
                 }
 
-                tokio::time::sleep(Duration::from_secs(seconds as u64));
+                tokio::time::sleep(Duration::from_secs(seconds as u64)).await;
 
                 sqlx::query!(
                     r#"

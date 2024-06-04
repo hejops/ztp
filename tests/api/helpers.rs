@@ -18,7 +18,6 @@ use uuid::Uuid;
 use wiremock::MockServer;
 use zero_to_prod::configuration::get_configuration;
 use zero_to_prod::configuration::DatabaseSettings;
-use zero_to_prod::configuration::EmailClientSettings;
 use zero_to_prod::delivery::try_send_email;
 use zero_to_prod::delivery::DeliveryOutcome;
 use zero_to_prod::email_client::EmailClient;
